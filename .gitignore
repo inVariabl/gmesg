@@ -1,0 +1,4 @@
+/gmesg
+/dist/
+*.test
+.claude/settings.local.json

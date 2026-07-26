@@ -31,6 +31,8 @@ func (m Model) View() string {
 	}
 	if status == "" {
 		switch {
+		case m.commanding:
+			status = m.commandInput.View()
 		case m.focus == focusList && m.startingConv:
 			status = "-- NEW CONVERSATION -- enter start · esc cancel"
 		case m.focus == focusList:
@@ -48,6 +50,9 @@ func (m Model) View() string {
 	line := statusStyle.Render(status)
 	if m.err != nil {
 		line = errStyle.Render(status)
+	}
+	if m.commanding {
+		line = m.commandInput.View()
 	}
 
 	return strings.TrimRight(body, "\n") + "\n" + line

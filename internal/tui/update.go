@@ -29,6 +29,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compose.SetHeight(composeHeight)
 		m.attachInput.Width = msg.Width
 		m.newConvInput.Width = msg.Width
+		m.commandInput.Width = msg.Width
 		if m.previewShowing {
 			m.showPreview() // reposition/resize the overlay to match
 		}
@@ -36,6 +37,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case conversationsLoadedMsg:
 		if msg.err != nil {
@@ -158,6 +162,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlC {
 		m.client.Disconnect()
 		return m, tea.Quit
+	}
+
+	// ":" opens the command palette from any state where it makes sense.
+	if msg.String() == ":" && !m.commanding && !m.attaching && !m.reacting &&
+		!(m.focus == focusList && m.list.FilterState() == list.Filtering) &&
+		!(m.focus == focusList && m.startingConv) {
+		m.commanding = true
+		m.commandInput.Reset()
+		m.compose.Blur()
+		m.attachInput.Blur()
+		return m, m.commandInput.Focus()
+	}
+
+	if m.commanding {
+		return m.handleCommandKey(msg)
 	}
 
 	switch m.focus {
@@ -401,10 +420,66 @@ func (m Model) handleAttachKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.pendingAttachments = append(m.pendingAttachments, path)
 		return m, nil
+	case "tab":
+		partial := expandPath(strings.TrimSpace(m.attachInput.Value()))
+		if partial == "" {
+			partial = "."
+		}
+		matches := completePath(partial)
+		if len(matches) == 0 {
+			return m, nil
+		}
+		if len(matches) == 1 {
+			completed := matches[0]
+			info, err := os.Stat(completed)
+			if err == nil && info.IsDir() {
+				completed += "/"
+			}
+			m.attachInput.SetValue(completed)
+			return m, nil
+		}
+		// Multiple matches -- show them in the status bar.
+		var names []string
+		for _, p := range matches {
+			base := filepath.Base(p)
+			info, err := os.Stat(p)
+			if err == nil && info.IsDir() {
+				base += "/"
+			}
+			names = append(names, base)
+		}
+		m.status = strings.Join(names, "  ")
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.attachInput, cmd = m.attachInput.Update(msg)
 	return m, cmd
+}
+
+// completePath returns sorted directory entries matching the partial path.
+// If partial ends with "/" it lists that directory; otherwise it splits
+// into directory + prefix and matches entries whose names start with prefix.
+func completePath(partial string) []string {
+	dir := filepath.Dir(partial)
+	base := filepath.Base(partial)
+	// If the user typed a trailing slash, base is ".", list everything.
+	if strings.HasSuffix(partial, "/") {
+		dir = partial
+		base = ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var matches []string
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), base) {
+			continue
+		}
+		full := filepath.Join(dir, e.Name())
+		matches = append(matches, full)
+	}
+	return matches
 }
 
 // handleNewConvKey handles the new-conversation phone number prompt opened
@@ -433,6 +508,191 @@ func (m Model) handleNewConvKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handleCommandKey handles the ":" command palette. Enter executes the
+// typed command; tab cycles through matching completions; esc cancels.
+func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.commanding = false
+		m.commandInput.Reset()
+		m.commandInput.Blur()
+		m.commandMatches = nil
+		m.commandMatchIdx = 0
+		return m, nil
+	case "enter":
+		cmd := strings.TrimSpace(m.commandInput.Value())
+		m.commanding = false
+		m.commandInput.Reset()
+		m.commandInput.Blur()
+		m.commandMatches = nil
+		m.commandMatchIdx = 0
+		if cmd == "" {
+			return m, nil
+		}
+		return m.executeCommand(cmd)
+	case "tab":
+		prefix := m.commandInput.Value()
+		if prefix == "" {
+			return m, nil
+		}
+		// Lazily compute (or recompute) the match list.
+		if m.commandMatches == nil {
+			for _, c := range commandNames {
+				if strings.HasPrefix(c, prefix) {
+					m.commandMatches = append(m.commandMatches, c)
+				}
+			}
+			m.commandMatchIdx = 0
+		}
+		if len(m.commandMatches) == 0 {
+			return m, nil
+		}
+		m.commandInput.SetValue(m.commandMatches[m.commandMatchIdx])
+		m.commandMatchIdx = (m.commandMatchIdx + 1) % len(m.commandMatches)
+		return m, nil
+	case "shift+tab":
+		prefix := m.commandInput.Value()
+		if prefix == "" {
+			return m, nil
+		}
+		if m.commandMatches == nil {
+			for _, c := range commandNames {
+				if strings.HasPrefix(c, prefix) {
+					m.commandMatches = append(m.commandMatches, c)
+				}
+			}
+			m.commandMatchIdx = 0
+		}
+		if len(m.commandMatches) == 0 {
+			return m, nil
+		}
+		m.commandMatchIdx = (m.commandMatchIdx - 1 + len(m.commandMatches)) % len(m.commandMatches)
+		m.commandInput.SetValue(m.commandMatches[m.commandMatchIdx])
+		return m, nil
+	}
+	// Any other key resets the match state since the prefix changed.
+	m.commandMatches = nil
+	m.commandMatchIdx = 0
+	var cmd tea.Cmd
+	m.commandInput, cmd = m.commandInput.Update(msg)
+	return m, cmd
+}
+
+// commandNames is the list of valid ":" commands for tab completion.
+var commandNames = []string{
+	"q", "quit",
+	"back", "list", "close",
+	"open",
+	"react",
+	"preview", "p",
+	"attach",
+	"new", "n",
+	"search", "s",
+	"send", "i",
+	"help",
+}
+
+// executeCommand dispatches a ":" command string (without the leading colon).
+func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
+	switch cmd {
+	case "q", "quit":
+		m.client.Disconnect()
+		return m, tea.Quit
+
+	case "back", "list", "close":
+		m.focus = focusList
+		m.hidePreview()
+		m.threadMode = modeNormal
+		m.compose.Blur()
+		m.renderThread(m.activeConvID)
+		return m, nil
+
+	case "open":
+		msgs := m.messages[m.activeConvID]
+		cur := m.msgCursor[m.activeConvID]
+		if cur < 0 || cur >= len(msgs) {
+			return m, nil
+		}
+		target := msgs[cur]
+		if gmclient.AttachmentSummary(target) == "" && len(gmclient.ExtractLinks(target)) == 0 {
+			return m, nil
+		}
+		m.status = "Opening..."
+		return m, openMessage(m.client, m.cacheDir, target)
+
+	case "react":
+		if m.focus != focusThread {
+			return m, nil
+		}
+		msgs := m.messages[m.activeConvID]
+		cur := m.msgCursor[m.activeConvID]
+		if cur >= 0 && cur < len(msgs) {
+			m.reacting = true
+			m.reactionCursor = 0
+		}
+		return m, nil
+
+	case "preview", "p":
+		if m.focus != focusThread {
+			return m, nil
+		}
+		msgs := m.messages[m.activeConvID]
+		cur := m.msgCursor[m.activeConvID]
+		if cur < 0 || cur >= len(msgs) {
+			return m, nil
+		}
+		target := msgs[cur]
+		if m.previewShowing && m.previewMsgID == target.GetMessageID() {
+			m.hidePreview()
+			return m, nil
+		}
+		if m.ueberzug == nil {
+			m.status = "image preview unavailable: install ueberzug to enable it"
+			return m, nil
+		}
+		m.hidePreview()
+		m.status = "Loading preview..."
+		return m, previewImage(m.client, m.cacheDir, target)
+
+	case "attach":
+		if m.focus != focusThread {
+			return m, nil
+		}
+		m.attaching = true
+		m.compose.Blur()
+		return m, m.attachInput.Focus()
+
+	case "new", "n":
+		m.startingConv = true
+		m.focus = focusList
+		return m, m.newConvInput.Focus()
+
+	case "search", "s":
+		if m.focus == focusList {
+			m.list.SetFilterState(list.Filtering)
+		}
+		return m, nil
+
+	case "send", "i":
+		if m.focus != focusThread {
+			return m, nil
+		}
+		m.threadMode = modeInsert
+		m.compose.Focus()
+		m.hidePreview()
+		m.renderThread(m.activeConvID)
+		return m, nil
+
+	case "help":
+		m.status = ":q quit · :back list · :open · :react · :preview · :attach · :new · :search · :send · :help"
+		return m, nil
+
+	default:
+		m.status = fmt.Sprintf("unknown command: %s (try :help)", cmd)
+		return m, nil
+	}
+}
+
 // splitPhones parses a comma-separated phone number list into its trimmed,
 // non-empty parts. A single number starts a 1:1 conversation; more than one
 // starts a group, mirroring gmclient.ResolveConversation.
@@ -456,6 +716,53 @@ func expandPath(p string) string {
 		return p
 	}
 	return filepath.Join(home, strings.TrimPrefix(p, "~"))
+}
+
+// handleMouse processes mouse scroll and click events.
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.MouseWheelUp, tea.MouseWheelDown:
+		delta := 1
+		if msg.Type == tea.MouseWheelUp {
+			delta = -1
+		}
+		switch m.focus {
+		case focusList:
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			return m, cmd
+		case focusThread:
+			if delta < 0 {
+				m.thread.LineUp(3)
+			} else {
+				m.thread.LineDown(3)
+			}
+			return m, nil
+		}
+
+	case tea.MouseLeft:
+		if msg.Action == tea.MouseActionRelease {
+			switch m.focus {
+			case focusList:
+				var cmd tea.Cmd
+				m.list, cmd = m.list.Update(msg)
+				return m, cmd
+			case focusThread:
+				// Clicking the compose area focuses it and enters insert mode.
+				if m.threadMode == modeNormal {
+					composeY := m.height - composeHeight - 1 // approximate top of compose area
+					if msg.Y >= composeY {
+						m.threadMode = modeInsert
+						m.compose.Focus()
+						m.hidePreview()
+						m.renderThread(m.activeConvID)
+						return m, nil
+					}
+				}
+			}
+		}
+	}
+	return m, nil
 }
 
 // handleGMEvent applies a live libgm event (new message, conversation

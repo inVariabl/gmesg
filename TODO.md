@@ -1,5 +1,5 @@
 # Features to Implement
-- [ ] image previews in the terminal, not opening in the browser but able to
+- [x] image previews in the terminal, not opening in the browser but able to
 			view them in the terminal with ueberzug or something
 - [x] "/" searches the conversation list so i can type "Ken" and it show me
 			Ken conversation
@@ -8,4 +8,5 @@
 - [x] some way of opening links? like if someone texts me a link i need a way
 			to open it in the browser or something. maybe the open attachment o
 			button could be integrated with that?
-- [ ] maybe like : can pull up a command menu at the bottom too
+- [x] maybe like : can pull up a command menu at the bottom too
+- [x] mouse cursor controls (scroll, click, etc)

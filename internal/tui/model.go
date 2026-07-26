@@ -79,6 +79,11 @@ type Model struct {
 	startingConv bool
 	newConvInput textinput.Model
 
+	commanding       bool
+	commandInput     textinput.Model
+	commandMatches   []string
+	commandMatchIdx  int
+
 	// previewShowing tracks whether an ueberzug overlay is currently on
 	// screen; previewMsgID/previewPath identify what it's showing, so a
 	// resize can redraw it in place and a cursor move can tell whether the
@@ -125,6 +130,10 @@ func New(client *libgm.Client, settings *gmproto.Settings, events chan any, cach
 	newConvInput := textinput.New()
 	newConvInput.Placeholder = "phone number(s), comma-separated for a group"
 
+	commandInput := textinput.New()
+	commandInput.Placeholder = "command (:q :open :react :preview :attach :new :search :send :help)"
+	commandInput.Prompt = ":"
+
 	return Model{
 		client:        client,
 		settings:      settings,
@@ -136,6 +145,7 @@ func New(client *libgm.Client, settings *gmproto.Settings, events chan any, cach
 		compose:       compose,
 		attachInput:   attachInput,
 		newConvInput:  newConvInput,
+		commandInput:  commandInput,
 		conversations: map[string]*gmproto.Conversation{},
 		messages:      map[string][]*gmproto.Message{},
 		msgCursor:     map[string]int{},

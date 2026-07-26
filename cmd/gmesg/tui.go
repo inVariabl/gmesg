@@ -80,7 +80,7 @@ func runTUI() error {
 	})
 
 	model := tui.New(client, settings, events, cacheDir, uzClient)
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := program.Run(); err != nil {
 		client.Disconnect()
 		return fmt.Errorf("tui: %w", err)

@@ -43,10 +43,27 @@ func DefaultSIM(settings *gmproto.Settings) *gmproto.SIMCard {
 	return settings.SIMCards[0]
 }
 
-// SendText sends a plain text message to conv using sim as the outgoing
-// SIM (nil is fine for single-SIM accounts).
-func SendText(client *libgm.Client, conv *gmproto.Conversation, sim *gmproto.SIMCard, text string) error {
+// Send sends a message to conv using sim as the outgoing SIM (nil is fine
+// for single-SIM accounts), with text and/or one or more attachments. At
+// least one of text or attachments must be non-empty.
+func Send(client *libgm.Client, conv *gmproto.Conversation, sim *gmproto.SIMCard, text string, attachments []*gmproto.MediaContent) error {
+	if text == "" && len(attachments) == 0 {
+		return fmt.Errorf("message has neither text nor attachments")
+	}
 	tmpID := util.GenerateTmpID()
+	var info []*gmproto.MessageInfo
+	if text != "" {
+		info = append(info, &gmproto.MessageInfo{
+			Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{
+				Content: text,
+			}},
+		})
+	}
+	for _, media := range attachments {
+		info = append(info, &gmproto.MessageInfo{
+			Data: &gmproto.MessageInfo_MediaContent{MediaContent: media},
+		})
+	}
 	req := &gmproto.SendMessageRequest{
 		ConversationID: conv.ConversationID,
 		MessagePayload: &gmproto.MessagePayload{
@@ -54,11 +71,7 @@ func SendText(client *libgm.Client, conv *gmproto.Conversation, sim *gmproto.SIM
 			ConversationID: conv.ConversationID,
 			ParticipantID:  conv.DefaultOutgoingID,
 			TmpID2:         tmpID,
-			MessageInfo: []*gmproto.MessageInfo{{
-				Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{
-					Content: text,
-				}},
-			}},
+			MessageInfo:    info,
 		},
 		SIMPayload: sim.GetSIMData().GetSIMPayload(),
 		TmpID:      tmpID,

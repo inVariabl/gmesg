@@ -30,6 +30,7 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	var recipients, message string
+	var files []string
 
 	root := &cobra.Command{
 		Use:           "gmesg",
@@ -40,18 +41,22 @@ func newRootCmd() *cobra.Command {
 
 Run "gmesg pair" once to link your phone via a terminal QR code, then use
 "gmesg" for the interactive TUI or "gmesg -p <number> -m <text>" to send a
-message from a script.
+message from a script. Attach files (photos, gifs, video, ...) with
+repeated -f flags; -m is optional if at least one -f is given.
 
 Running more than one gmesg process at the same time (e.g. the TUI plus
 "gmesg daemon" for notifications) needs each one on its own --profile,
 since a profile is a single paired-device identity and two processes
 sharing one will fight over the same connection to Google's servers.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if recipients != "" || message != "" {
-				if recipients == "" || message == "" {
-					return fmt.Errorf("both -p (recipient) and -m (message) are required to send")
+			if recipients != "" || message != "" || len(files) > 0 {
+				if recipients == "" {
+					return fmt.Errorf("-p (recipient) is required to send")
 				}
-				return runSend(recipients, message)
+				if message == "" && len(files) == 0 {
+					return fmt.Errorf("-m (message) or -f (file) is required to send")
+				}
+				return runSend(recipients, message, files)
 			}
 			return runTUI()
 		},
@@ -59,6 +64,7 @@ sharing one will fight over the same connection to Google's servers.`,
 	root.PersistentFlags().StringVar(&profile, "profile", gmclient.DefaultProfile, "Paired identity to use (default is the un-namespaced session)")
 	root.Flags().StringVarP(&recipients, "phone", "p", "", "Recipient phone number(s), comma-separated for a group")
 	root.Flags().StringVarP(&message, "message", "m", "", "Message text to send")
+	root.Flags().StringArrayVarP(&files, "file", "f", nil, "Attach a file to send (repeatable for multiple attachments)")
 
 	root.AddCommand(newPairCmd())
 	root.AddCommand(newDaemonCmd())

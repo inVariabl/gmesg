@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 
 	"github.com/inVariabl/gmesg/internal/gmclient"
 )
@@ -16,7 +17,7 @@ import (
 // one-shot send, since this is meant to be used from scripts.
 const sendTimeout = 30 * time.Second
 
-func runSend(recipients, message string) error {
+func runSend(recipients, message string, files []string) error {
 	has, err := gmclient.HasSession(profile)
 	if err != nil {
 		return fmt.Errorf("check session: %w", err)
@@ -51,7 +52,17 @@ func runSend(recipients, message string) error {
 	}
 
 	sim := gmclient.DefaultSIM(settings)
-	if err := gmclient.SendText(client, conv, sim, message); err != nil {
+
+	var attachments []*gmproto.MediaContent
+	for _, f := range files {
+		media, err := gmclient.UploadAttachment(client, f)
+		if err != nil {
+			return fmt.Errorf("attach: %w", err)
+		}
+		attachments = append(attachments, media)
+	}
+
+	if err := gmclient.Send(client, conv, sim, message, attachments); err != nil {
 		return fmt.Errorf("send: %w", err)
 	}
 

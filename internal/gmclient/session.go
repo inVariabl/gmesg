@@ -54,6 +54,18 @@ func DataDir(profile string) (string, error) {
 	return filepath.Join(base, "profiles", profile), nil
 }
 
+// CacheDir returns the directory downloaded attachments are cached in for a
+// given profile. Unlike the session file, this holds no secrets -- it's
+// just a place external viewers (xdg-open and friends) can be pointed at,
+// since they need a real file path rather than bytes in memory.
+func CacheDir(profile string) (string, error) {
+	dir, err := DataDir(profile)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "cache"), nil
+}
+
 func sessionPath(profile string) (string, error) {
 	dir, err := DataDir(profile)
 	if err != nil {

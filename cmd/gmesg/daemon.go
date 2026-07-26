@@ -120,7 +120,10 @@ func (n *notifier) handleMessage(msg *gmproto.Message) {
 	}
 	text := gmclient.MessageText(msg)
 	if text == "" {
-		return // no text part (e.g. a reaction or media-only message); attachments aren't handled yet
+		text = gmclient.AttachmentSummary(msg)
+	}
+	if text == "" {
+		return // no text and no attachments (e.g. a bare reaction event)
 	}
 
 	title := "gmesg"

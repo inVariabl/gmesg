@@ -12,6 +12,7 @@ import (
 
 	"github.com/inVariabl/gmesg/internal/gmclient"
 	"github.com/inVariabl/gmesg/internal/tui"
+	"github.com/inVariabl/gmesg/internal/ueberzug"
 )
 
 // connectTimeout bounds how long we'll wait for the initial connection
@@ -55,6 +56,20 @@ func runTUI() error {
 		return fmt.Errorf("connect: %w", err)
 	}
 
+	cacheDir, err := gmclient.CacheDir(profile)
+	if err != nil {
+		return fmt.Errorf("resolve cache dir: %w", err)
+	}
+
+	// A nil uzClient (ueberzug not on PATH) just means image previews are
+	// disabled -- every ueberzug.Client method tolerates a nil receiver, so
+	// the rest of the TUI doesn't need to know the difference.
+	uzClient, err := ueberzug.Start()
+	if err != nil {
+		logger.Warn().Err(err).Msg("ueberzug unavailable, image previews disabled")
+	}
+	defer uzClient.Close()
+
 	events := make(chan any, 32)
 	client.SetEventHandler(func(evt any) {
 		select {
@@ -64,7 +79,7 @@ func runTUI() error {
 		}
 	})
 
-	model := tui.New(client, settings, events)
+	model := tui.New(client, settings, events, cacheDir, uzClient)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		client.Disconnect()

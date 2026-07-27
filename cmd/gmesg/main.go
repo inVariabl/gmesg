@@ -1,6 +1,7 @@
 // Command gmesg is a terminal client for Google Messages: an interactive
-// TUI plus a scriptable one-shot CLI, built on libgm (the protocol library
-// behind the mautrix-gmessages bridge) instead of browser automation.
+// TUI backed by a background notification daemon, plus a scriptable
+// one-shot CLI, built on libgm (the protocol library behind the
+// mautrix-gmessages bridge) instead of browser automation.
 package main
 
 import (
@@ -13,12 +14,9 @@ import (
 )
 
 // profile selects which paired identity to use, set via the --profile
-// persistent flag and read directly by run*() below. Running two gmesg
-// processes against the same profile at once (e.g. the TUI and the
-// daemon) makes them fight over one long-poll connection with Google's
-// servers, since a profile is a single paired-device identity -- use a
-// separate profile (a separate "gmesg pair --profile X") for each process
-// you want connected at the same time.
+// persistent flag and read directly by run*() below. The daemon owns the
+// single connection to Google's servers; the TUI connects to the daemon
+// over a Unix socket so both share one profile and one pairing.
 var profile string
 
 func main() {
@@ -39,15 +37,14 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		Long: `gmesg is a terminal client for Google Messages (RCS/SMS).
 
-Run "gmesg pair" once to link your phone via a terminal QR code, then use
-"gmesg" for the interactive TUI or "gmesg -p <number> -m <text>" to send a
-message from a script. Attach files (photos, gifs, video, ...) with
-repeated -f flags; -m is optional if at least one -f is given.
+Run "gmesg pair" once to link your phone via a terminal QR code. Then
+start "gmesg daemon &" for background notifications, and use "gmesg" for
+the interactive TUI (or "gmesg -p <number> -m <text>" to send from a
+script). The TUI connects to the daemon over a Unix socket, so both share
+one pairing -- no separate profiles needed.
 
-Running more than one gmesg process at the same time (e.g. the TUI plus
-"gmesg daemon" for notifications) needs each one on its own --profile,
-since a profile is a single paired-device identity and two processes
-sharing one will fight over the same connection to Google's servers.`,
+Attach files (photos, gifs, video, ...) with repeated -f flags; -m is
+optional if at least one -f is given.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if recipients != "" || message != "" || len(files) > 0 {
 				if recipients == "" {
@@ -77,8 +74,11 @@ func newDaemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Run in the background and notify-send on incoming messages",
 		Long: `Daemon keeps a connection open and fires a notify-send notification for
-every incoming message. It's meant to be started from your login/autostart
-setup (e.g. an xinitrc/xprofile line), the same way you'd run dunst itself.`,
+every incoming message. It also listens on a Unix socket for the TUI to
+connect, allowing both to share one pairing.
+
+Meant to be started from your login/autostart setup (e.g. an xinitrc or
+xprofile line), the same way you'd run dunst itself.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDaemon()
 		},

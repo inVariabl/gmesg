@@ -1,15 +1,17 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/inVariabl/gmesg/internal/gmclient"
+	"github.com/inVariabl/gmesg/internal/ipc"
 )
 
 type conversationsLoadedMsg struct {
@@ -33,15 +35,12 @@ type reactionResultMsg struct {
 }
 
 type openResultMsg struct {
-	info string // non-error status to show, e.g. "still fetching, try again shortly"
+	info string
 	err  error
 }
 
-// previewReadyMsg carries the outcome of downloading a message's image
-// for the inline preview pane. path is empty (with info or err set) when
-// there's nothing to show yet.
 type previewReadyMsg struct {
-	msgID string // guards against a stale download landing after the user moved on
+	msgID string
 	path  string
 	info  string
 	err   error
@@ -54,75 +53,91 @@ type conversationResolvedMsg struct {
 
 type gmEventMsg struct{ evt any }
 
-func fetchConversations(client *libgm.Client) tea.Cmd {
+func fetchConversations(ipcClient *ipc.Client) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.ListConversations(25, gmproto.ListConversationsRequest_INBOX)
-		if err != nil {
+		var result struct {
+			Conversations []json.RawMessage `json:"conversations"`
+		}
+		if err := ipcClient.Call("list_conversations", nil, &result); err != nil {
 			return conversationsLoadedMsg{err: err}
 		}
-		return conversationsLoadedMsg{convs: resp.GetConversations()}
+		convs := make([]*gmproto.Conversation, len(result.Conversations))
+		for i, raw := range result.Conversations {
+			var conv gmproto.Conversation
+			if err := protojson.Unmarshal(raw, &conv); err != nil {
+				return conversationsLoadedMsg{err: fmt.Errorf("decode conversation: %w", err)}
+			}
+			convs[i] = &conv
+		}
+		return conversationsLoadedMsg{convs: convs}
 	}
 }
 
-func fetchThread(client *libgm.Client, convID string) tea.Cmd {
+func fetchThread(ipcClient *ipc.Client, convID string) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.FetchMessages(convID, 50, nil)
-		if err != nil {
+		var result struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		params := map[string]string{"conv_id": convID}
+		if err := ipcClient.Call("fetch_messages", params, &result); err != nil {
 			return threadLoadedMsg{convID: convID, err: err}
 		}
-		msgs := resp.GetMessages()
-		// The API returns newest-first; render oldest-first like a chat log.
-		for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
-			msgs[i], msgs[j] = msgs[j], msgs[i]
+		msgs := make([]*gmproto.Message, len(result.Messages))
+		for i, raw := range result.Messages {
+			var msg gmproto.Message
+			if err := protojson.Unmarshal(raw, &msg); err != nil {
+				return threadLoadedMsg{convID: convID, err: fmt.Errorf("decode message: %w", err)}
+			}
+			msgs[i] = &msg
 		}
 		return threadLoadedMsg{convID: convID, msgs: msgs}
 	}
 }
 
-// resolveConversation gets or creates a conversation with the given phone
-// numbers (see gmclient.ResolveConversation) so the "n" new-conversation
-// prompt can jump straight into a thread that may not have existed before.
-func resolveConversation(client *libgm.Client, phones []string) tea.Cmd {
+func resolveConversation(ipcClient *ipc.Client, phones []string) tea.Cmd {
 	return func() tea.Msg {
-		conv, err := gmclient.ResolveConversation(client, phones)
-		return conversationResolvedMsg{conv: conv, err: err}
+		var result struct {
+			Conversation json.RawMessage `json:"conversation"`
+		}
+		params := map[string][]string{"phones": phones}
+		if err := ipcClient.Call("resolve_conversation", params, &result); err != nil {
+			return conversationResolvedMsg{err: err}
+		}
+		var conv gmproto.Conversation
+		if err := protojson.Unmarshal(result.Conversation, &conv); err != nil {
+			return conversationResolvedMsg{err: fmt.Errorf("decode conversation: %w", err)}
+		}
+		return conversationResolvedMsg{conv: &conv}
 	}
 }
 
-// sendMessage uploads any attachmentPaths and sends them alongside text.
-// Uploads happen synchronously inside the returned tea.Cmd's goroutine, so
-// the UI stays responsive while a large attachment is in flight.
-func sendMessage(client *libgm.Client, conv *gmproto.Conversation, sim *gmproto.SIMCard, text string, attachmentPaths []string) tea.Cmd {
+func sendMessage(ipcClient *ipc.Client, conv *gmproto.Conversation, text string, attachmentPaths []string) tea.Cmd {
 	return func() tea.Msg {
-		var attachments []*gmproto.MediaContent
-		for _, path := range attachmentPaths {
-			media, err := gmclient.UploadAttachment(client, path)
-			if err != nil {
-				return sendResultMsg{convID: conv.GetConversationID(), err: fmt.Errorf("attach %s: %w", path, err)}
-			}
-			attachments = append(attachments, media)
+		params := map[string]any{
+			"conv_id":          conv.GetConversationID(),
+			"text":             text,
+			"attachment_paths": attachmentPaths,
 		}
-		err := gmclient.Send(client, conv, sim, text, attachments)
+		var result struct {
+			ConvID string `json:"conv_id"`
+		}
+		err := ipcClient.Call("send_message", params, &result)
 		return sendResultMsg{convID: conv.GetConversationID(), err: err}
 	}
 }
 
-func sendReaction(client *libgm.Client, sim *gmproto.SIMCard, target *gmproto.Message, emoji string) tea.Cmd {
+func sendReaction(ipcClient *ipc.Client, target *gmproto.Message, emoji string) tea.Cmd {
 	return func() tea.Msg {
-		err := gmclient.SendReaction(client, sim, target, emoji)
+		params := map[string]string{
+			"msg_id": target.GetMessageID(),
+			"emoji":  emoji,
+		}
+		err := ipcClient.Call("send_reaction", params, nil)
 		return reactionResultMsg{err: err}
 	}
 }
 
-// openMessage hands every attachment and http(s) link on msg to the
-// desktop's default opener: attachments are downloaded into cacheDir first
-// (skipping ones already downloaded); links are passed straight through.
-// Attachments that haven't finished transferring from the phone yet get an
-// explicit full-media request instead -- Google won't push the decryption
-// key on its own, the client has to ask for it (see gmclient.RequestFullMedia)
-// -- and the caller is expected to try again in a few seconds once the
-// follow-up event lands.
-func openMessage(client *libgm.Client, cacheDir string, msg *gmproto.Message) tea.Cmd {
+func openMessage(ipcClient *ipc.Client, cacheDir string, msg *gmproto.Message) tea.Cmd {
 	return func() tea.Msg {
 		attachments := gmclient.MessageAttachments(msg)
 		links := gmclient.ExtractLinks(msg)
@@ -132,17 +147,29 @@ func openMessage(client *libgm.Client, cacheDir string, msg *gmproto.Message) te
 		var requested []string
 		for _, a := range attachments {
 			if !gmclient.AttachmentReady(a.Media) {
-				if err := gmclient.RequestFullMedia(client, a); err != nil {
+				params := map[string]string{
+					"msg_id":        a.MessageID,
+					"action_msg_id": a.ActionMessageID,
+				}
+				if err := ipcClient.Call("request_full_media", params, nil); err != nil {
 					return openResultMsg{err: err}
 				}
 				requested = append(requested, a.Media.GetMediaName())
 				continue
 			}
-			path, err := gmclient.EnsureCached(client, cacheDir, a.Media)
-			if err != nil {
+			params := map[string]any{
+				"media_id":       a.Media.GetMediaID(),
+				"media_name":     a.Media.GetMediaName(),
+				"decryption_key": a.Media.GetDecryptionKey(),
+				"cache_dir":      cacheDir,
+			}
+			var result struct {
+				Path string `json:"path"`
+			}
+			if err := ipcClient.Call("download_attachment", params, &result); err != nil {
 				return openResultMsg{err: err}
 			}
-			if err := openWithDefaultApp(path); err != nil {
+			if err := openWithDefaultApp(result.Path); err != nil {
 				return openResultMsg{err: err}
 			}
 		}
@@ -158,22 +185,16 @@ func openMessage(client *libgm.Client, cacheDir string, msg *gmproto.Message) te
 	}
 }
 
-// openWithDefaultApp hands path (a local file path or a URL) to the
-// desktop's default opener.
 func openWithDefaultApp(path string) error {
 	cmd := exec.Command("xdg-open", path)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	go cmd.Wait() // reap the child; we don't care about its exit status
+	go cmd.Wait()
 	return nil
 }
 
-// previewImage resolves the local path of msg's first image attachment for
-// the inline preview pane, downloading it if needed (or requesting it from
-// the phone if it hasn't arrived yet). A message with no image attachment
-// resolves with an empty path and an explanatory info string.
-func previewImage(client *libgm.Client, cacheDir string, msg *gmproto.Message) tea.Cmd {
+func previewImage(ipcClient *ipc.Client, cacheDir string, msg *gmproto.Message) tea.Cmd {
 	return func() tea.Msg {
 		msgID := msg.GetMessageID()
 		a, ok := gmclient.FirstImageAttachment(msg)
@@ -181,21 +202,33 @@ func previewImage(client *libgm.Client, cacheDir string, msg *gmproto.Message) t
 			return previewReadyMsg{msgID: msgID, info: "selected message has no image to preview"}
 		}
 		if !gmclient.AttachmentReady(a.Media) {
-			if err := gmclient.RequestFullMedia(client, a); err != nil {
+			params := map[string]string{
+				"msg_id":        a.MessageID,
+				"action_msg_id": a.ActionMessageID,
+			}
+			if err := ipcClient.Call("request_full_media", params, nil); err != nil {
 				return previewReadyMsg{msgID: msgID, err: err}
 			}
 			return previewReadyMsg{msgID: msgID, info: fmt.Sprintf("requested full download for %s -- give it a few seconds and press p again", a.Media.GetMediaName())}
 		}
-		path, err := gmclient.EnsureCached(client, cacheDir, a.Media)
-		if err != nil {
+		params := map[string]any{
+			"media_id":       a.Media.GetMediaID(),
+			"media_name":     a.Media.GetMediaName(),
+			"decryption_key": a.Media.GetDecryptionKey(),
+			"cache_dir":      cacheDir,
+		}
+		var result struct {
+			Path string `json:"path"`
+		}
+		if err := ipcClient.Call("download_attachment", params, &result); err != nil {
 			return previewReadyMsg{msgID: msgID, err: err}
 		}
-		return previewReadyMsg{msgID: msgID, path: path}
+		return previewReadyMsg{msgID: msgID, path: result.Path}
 	}
 }
 
-func waitForEvent(ch <-chan any) tea.Cmd {
+func waitForEvent(ipcClient *ipc.Client) tea.Cmd {
 	return func() tea.Msg {
-		return gmEventMsg{evt: <-ch}
+		return gmEventMsg{evt: <-ipcClient.Events}
 	}
 }

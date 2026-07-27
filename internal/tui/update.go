@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,10 +10,11 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/inVariabl/gmesg/internal/gmclient"
+	"github.com/inVariabl/gmesg/internal/ipc"
 )
 
 const composeHeight = 2
@@ -22,16 +24,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.ready = true
-		m.list.SetSize(msg.Width, msg.Height-1) // -1 for the status line
+		m.list.SetSize(msg.Width, msg.Height-1)
 		m.thread.Width = msg.Width
-		m.thread.Height = msg.Height - composeHeight - 3 // header + status + compose border
+		m.thread.Height = msg.Height - composeHeight - 3
 		m.compose.SetWidth(msg.Width)
 		m.compose.SetHeight(composeHeight)
 		m.attachInput.Width = msg.Width
 		m.newConvInput.Width = msg.Width
 		m.commandInput.Width = msg.Width
 		if m.previewShowing {
-			m.showPreview() // reposition/resize the overlay to match
+			m.showPreview()
 		}
 		return m, nil
 
@@ -60,9 +62,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.messages[msg.convID] = msg.msgs
-		// Always land on the most recent message, not just the first time
-		// this conversation loads -- reacting should default to "the last
-		// thing said" without having to navigate there first.
 		m.msgCursor[msg.convID] = len(msg.msgs) - 1
 		if msg.convID == m.activeConvID {
 			m.renderThread(msg.convID)
@@ -100,9 +99,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		// The user may have moved the selection on before this landed --
-		// in that case just drop it silently rather than popping up a
-		// preview for a message that's no longer selected.
 		msgs := m.messages[m.activeConvID]
 		cur := m.msgCursor[m.activeConvID]
 		if cur < 0 || cur >= len(msgs) || msgs[cur].GetMessageID() != msg.msgID {
@@ -130,28 +126,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshListItems()
 		m.activeConvID = convID
 		m.focus = focusThread
-		// Straight into insert mode -- the whole point of "n" is to say
-		// something to a number/contact you haven't texted in this session,
-		// so there's nothing to read yet and no reason to land in normal
-		// mode first.
 		m.threadMode = modeInsert
 		m.compose.Focus()
 		m.msgCursor[convID] = len(m.messages[convID]) - 1
 		m.renderThread(convID)
 		m.thread.GotoBottom()
-		return m, fetchThread(m.client, convID)
+		return m, fetchThread(m.ipcClient, convID)
 
 	case gmEventMsg:
 		cmd := m.handleGMEvent(msg.evt)
-		return m, tea.Batch(cmd, waitForEvent(m.events))
+		return m, tea.Batch(cmd, waitForEvent(m.ipcClient))
 
 	default:
-		// bubbles/list schedules its own tea.Cmds internally -- notably
-		// list.FilterMatchesMsg, which is how a filter query typed via "/"
-		// actually narrows the visible items -- and expects the resulting
-		// messages to be routed back into list.Update. Without this, the
-		// filter input would accept keystrokes but the list would never
-		// re-narrow.
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
 		return m, cmd
@@ -160,11 +146,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlC {
-		m.client.Disconnect()
+		m.ipcClient.Close()
 		return m, tea.Quit
 	}
 
-	// ":" opens the command palette from any state where it makes sense.
 	if msg.String() == ":" && !m.commanding && !m.attaching && !m.reacting &&
 		!(m.focus == focusList && m.list.FilterState() == list.Filtering) &&
 		!(m.focus == focusList && m.startingConv) {
@@ -181,10 +166,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch m.focus {
 	case focusList:
-		// While the user is typing a filter query (bubbles/list's builtin
-		// "/" search), every keystroke -- including "q" and "enter" -- has
-		// to reach the filter input verbatim instead of being intercepted
-		// as quit/open below.
 		if m.list.FilterState() == list.Filtering {
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
@@ -195,7 +176,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "q":
-			m.client.Disconnect()
+			m.ipcClient.Close()
 			return m, tea.Quit
 		case "n":
 			m.startingConv = true
@@ -209,13 +190,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus = focusThread
 			m.threadMode = modeNormal
 			m.compose.Blur()
-			// Provisional -- corrected to the true most-recent index once
-			// fetchThread's threadLoadedMsg arrives, since messages may not
-			// be loaded yet on first visit to this conversation.
 			m.msgCursor[m.activeConvID] = len(m.messages[m.activeConvID]) - 1
 			m.renderThread(m.activeConvID)
 			m.thread.GotoBottom()
-			return m, fetchThread(m.client, m.activeConvID)
+			return m, fetchThread(m.ipcClient, m.activeConvID)
 		}
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
@@ -235,10 +213,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleThreadNormalKey handles vim-style navigation while viewing a
-// thread: j/k to scroll a line, ctrl+d/ctrl+u for a half page, gg/G to
-// jump to the top/bottom, J/K to move the message selection, r to react,
-// i/a to enter insert mode and compose.
 func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.reacting {
 		return m.handleReactionKey(msg)
@@ -256,13 +230,13 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc":
 		m.focus = focusList
 		m.hidePreview()
-		m.renderThread(m.activeConvID) // drop selection highlight
+		m.renderThread(m.activeConvID)
 		return m, nil
 	case "i", "a":
 		m.threadMode = modeInsert
 		m.compose.Focus()
 		m.hidePreview()
-		m.renderThread(m.activeConvID) // drop selection highlight
+		m.renderThread(m.activeConvID)
 		return m, nil
 	case "j", "down":
 		m.thread.LineDown(1)
@@ -295,16 +269,16 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		target := msgs[cur]
 		if m.previewShowing && m.previewMsgID == target.GetMessageID() {
-			m.hidePreview() // "p" again on the same message dismisses it
+			m.hidePreview()
 			return m, nil
 		}
 		if m.ueberzug == nil {
 			m.status = "image preview unavailable: install ueberzug to enable it"
 			return m, nil
 		}
-		m.hidePreview() // drop any previous preview before loading the new one
+		m.hidePreview()
 		m.status = "Loading preview..."
-		return m, previewImage(m.client, m.cacheDir, target)
+		return m, previewImage(m.ipcClient, m.cacheDir, target)
 	case "o":
 		msgs := m.messages[m.activeConvID]
 		cur := m.msgCursor[m.activeConvID]
@@ -316,13 +290,11 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "Opening..."
-		return m, openMessage(m.client, m.cacheDir, target)
+		return m, openMessage(m.ipcClient, m.cacheDir, target)
 	}
 	return m, nil
 }
 
-// handleReactionKey handles the reaction-picker overlay: h/l or number keys
-// choose an emoji, enter confirms, esc cancels.
 func (m Model) handleReactionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -358,12 +330,9 @@ func (m Model) sendSelectedReaction(emoji string) (tea.Model, tea.Cmd) {
 	}
 	target := msgs[cur]
 	m.status = "Reacting..."
-	return m, sendReaction(m.client, m.outgoingSIM(), target, emoji)
+	return m, sendReaction(m.ipcClient, target, emoji)
 }
 
-// handleThreadInsertKey handles typing into the compose box. Esc returns
-// to normal mode (vim-style); ctrl+t opens the attach-file prompt;
-// everything else goes to the textarea.
 func (m Model) handleThreadInsertKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -387,16 +356,13 @@ func (m Model) handleThreadInsertKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.compose.Reset()
 		m.pendingAttachments = nil
 		m.status = "Sending..."
-		return m, sendMessage(m.client, conv, m.outgoingSIM(), text, attachments)
+		return m, sendMessage(m.ipcClient, conv, text, attachments)
 	}
 	var cmd tea.Cmd
 	m.compose, cmd = m.compose.Update(msg)
 	return m, cmd
 }
 
-// handleAttachKey handles the attach-file path prompt opened by ctrl+t.
-// Enter validates the path and queues it as a pending attachment; esc
-// cancels. Either way, control returns to the compose box.
 func (m Model) handleAttachKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -438,7 +404,6 @@ func (m Model) handleAttachKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.attachInput.SetValue(completed)
 			return m, nil
 		}
-		// Multiple matches -- show them in the status bar.
 		var names []string
 		for _, p := range matches {
 			base := filepath.Base(p)
@@ -456,13 +421,9 @@ func (m Model) handleAttachKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// completePath returns sorted directory entries matching the partial path.
-// If partial ends with "/" it lists that directory; otherwise it splits
-// into directory + prefix and matches entries whose names start with prefix.
 func completePath(partial string) []string {
 	dir := filepath.Dir(partial)
 	base := filepath.Base(partial)
-	// If the user typed a trailing slash, base is ".", list everything.
 	if strings.HasSuffix(partial, "/") {
 		dir = partial
 		base = ""
@@ -482,9 +443,6 @@ func completePath(partial string) []string {
 	return matches
 }
 
-// handleNewConvKey handles the new-conversation phone number prompt opened
-// by "n" from the conversation list. Enter resolves (or creates) the
-// conversation and jumps straight into it, ready to type; esc cancels.
 func (m Model) handleNewConvKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -501,15 +459,13 @@ func (m Model) handleNewConvKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "Starting conversation..."
-		return m, resolveConversation(m.client, phones)
+		return m, resolveConversation(m.ipcClient, phones)
 	}
 	var cmd tea.Cmd
 	m.newConvInput, cmd = m.newConvInput.Update(msg)
 	return m, cmd
 }
 
-// handleCommandKey handles the ":" command palette. Enter executes the
-// typed command; tab cycles through matching completions; esc cancels.
 func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -535,7 +491,6 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if prefix == "" {
 			return m, nil
 		}
-		// Lazily compute (or recompute) the match list.
 		if m.commandMatches == nil {
 			for _, c := range commandNames {
 				if strings.HasPrefix(c, prefix) {
@@ -570,7 +525,6 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.commandInput.SetValue(m.commandMatches[m.commandMatchIdx])
 		return m, nil
 	}
-	// Any other key resets the match state since the prefix changed.
 	m.commandMatches = nil
 	m.commandMatchIdx = 0
 	var cmd tea.Cmd
@@ -578,7 +532,6 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// commandNames is the list of valid ":" commands for tab completion.
 var commandNames = []string{
 	"q", "quit",
 	"back", "list", "close",
@@ -592,11 +545,10 @@ var commandNames = []string{
 	"help",
 }
 
-// executeCommand dispatches a ":" command string (without the leading colon).
 func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 	switch cmd {
 	case "q", "quit":
-		m.client.Disconnect()
+		m.ipcClient.Close()
 		return m, tea.Quit
 
 	case "back", "list", "close":
@@ -618,7 +570,7 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "Opening..."
-		return m, openMessage(m.client, m.cacheDir, target)
+		return m, openMessage(m.ipcClient, m.cacheDir, target)
 
 	case "react":
 		if m.focus != focusThread {
@@ -652,7 +604,7 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		}
 		m.hidePreview()
 		m.status = "Loading preview..."
-		return m, previewImage(m.client, m.cacheDir, target)
+		return m, previewImage(m.ipcClient, m.cacheDir, target)
 
 	case "attach":
 		if m.focus != focusThread {
@@ -693,9 +645,6 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 	}
 }
 
-// splitPhones parses a comma-separated phone number list into its trimmed,
-// non-empty parts. A single number starts a 1:1 conversation; more than one
-// starts a group, mirroring gmclient.ResolveConversation.
 func splitPhones(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
@@ -706,7 +655,6 @@ func splitPhones(s string) []string {
 	return out
 }
 
-// expandPath expands a leading ~ to the user's home directory.
 func expandPath(p string) string {
 	if p == "" || p[0] != '~' {
 		return p
@@ -718,7 +666,6 @@ func expandPath(p string) string {
 	return filepath.Join(home, strings.TrimPrefix(p, "~"))
 }
 
-// handleMouse processes mouse scroll and click events.
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.MouseWheelUp, tea.MouseWheelDown:
@@ -748,9 +695,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.list, cmd = m.list.Update(msg)
 				return m, cmd
 			case focusThread:
-				// Clicking the compose area focuses it and enters insert mode.
 				if m.threadMode == modeNormal {
-					composeY := m.height - composeHeight - 1 // approximate top of compose area
+					composeY := m.height - composeHeight - 1
 					if msg.Y >= composeY {
 						m.threadMode = modeInsert
 						m.compose.Focus()
@@ -765,24 +711,35 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleGMEvent applies a live libgm event (new message, conversation
-// update, etc) to the model. It never returns waitForEvent itself --
-// the caller is responsible for re-arming the listener exactly once.
 func (m *Model) handleGMEvent(evt any) tea.Cmd {
 	switch v := evt.(type) {
-	case *libgm.WrappedMessage:
-		m.applyIncomingMessage(v.Message)
-	case *gmproto.Conversation:
-		m.conversations[v.GetConversationID()] = v
-		m.refreshListItems()
+	case ipc.Event:
+		switch v.Event {
+		case "message":
+			var data struct {
+				Message json.RawMessage `json:"message"`
+				IsOld   bool            `json:"is_old"`
+			}
+			if err := json.Unmarshal(v.Data, &data); err != nil {
+				return nil
+			}
+			var msg gmproto.Message
+			if err := protojson.Unmarshal(data.Message, &msg); err != nil {
+				return nil
+			}
+			m.applyIncomingMessage(&msg)
+		case "conversation":
+			var conv gmproto.Conversation
+			if err := protojson.Unmarshal(v.Data, &conv); err != nil {
+				return nil
+			}
+			m.conversations[conv.GetConversationID()] = &conv
+			m.refreshListItems()
+		}
 	}
 	return nil
 }
 
-// applyIncomingMessage merges a message from the event stream into the
-// active conversation's message list. A message ID already present gets
-// updated in place -- this is how reaction changes and edits to earlier
-// messages arrive, not just new sends -- otherwise it's appended.
 func (m *Model) applyIncomingMessage(msg *gmproto.Message) {
 	convID := msg.GetConversationID()
 	existing := m.messages[convID]

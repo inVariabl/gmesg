@@ -24,14 +24,30 @@ func MessageText(msg *gmproto.Message) string {
 	return strings.Join(parts, "\n")
 }
 
+// SenderParticipantID returns the participant ID of whoever sent msg.
+func SenderParticipantID(msg *gmproto.Message) string {
+	if id := msg.GetSenderParticipant().GetID().GetParticipantID(); id != "" {
+		return id
+	}
+	return msg.GetParticipantID()
+}
+
+// SenderIsSelf reports whether msg was sent from this account.
+func SenderIsSelf(conv *gmproto.Conversation, msg *gmproto.Message) bool {
+	participantID := SenderParticipantID(msg)
+	for _, p := range conv.GetParticipants() {
+		if p.GetID().GetParticipantID() == participantID {
+			return p.GetIsMe()
+		}
+	}
+	return participantID == conv.GetDefaultOutgoingID()
+}
+
 // SenderName returns a display name for whoever sent msg: "You" for
 // messages sent from this account, otherwise their first/full name or
 // phone number, falling back to the raw participant ID.
 func SenderName(conv *gmproto.Conversation, msg *gmproto.Message) string {
-	participantID := msg.GetSenderParticipant().GetID().GetParticipantID()
-	if participantID == "" {
-		participantID = msg.GetParticipantID()
-	}
+	participantID := SenderParticipantID(msg)
 	for _, p := range conv.GetParticipants() {
 		if p.GetID().GetParticipantID() != participantID {
 			continue
@@ -144,11 +160,36 @@ var linkPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
 // order, with trailing sentence punctuation (".", ",", ")", etc.) trimmed
 // off since it's rarely part of the URL itself.
 func ExtractLinks(msg *gmproto.Message) []string {
-	matches := linkPattern.FindAllString(MessageText(msg), -1)
-	for i, link := range matches {
-		matches[i] = strings.TrimRight(link, ".,!?;:)")
+	spans := LinkSpans(MessageText(msg))
+	matches := make([]string, len(spans))
+	for i, s := range spans {
+		matches[i] = s.Text
 	}
 	return matches
+}
+
+// LinkSpan is one link match within a piece of text: its byte range plus
+// the already-trimmed link text (see LinkSpans).
+type LinkSpan struct {
+	Start, End int
+	Text       string
+}
+
+// LinkSpans locates every http(s) URL in text and returns its byte range
+// alongside the same trailing-punctuation-trimmed text ExtractLinks
+// returns, so callers that need to style or otherwise act on a link in
+// place (rather than just list the URLs) know exactly which bytes to
+// touch.
+func LinkSpans(text string) []LinkSpan {
+	idxs := linkPattern.FindAllStringIndex(text, -1)
+	spans := make([]LinkSpan, len(idxs))
+	for i, m := range idxs {
+		start, end := m[0], m[1]
+		trimmed := strings.TrimRight(text[start:end], ".,!?;:)")
+		end = start + len(trimmed)
+		spans[i] = LinkSpan{Start: start, End: end, Text: trimmed}
+	}
+	return spans
 }
 
 // ReactionSummary renders a message's reactions as a single display line,

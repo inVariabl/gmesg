@@ -86,26 +86,38 @@ var reactionStyle = lipgloss.NewStyle().Faint(true).Padding(0, 1)
 var attachmentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Padding(0, 1)
 var pendingAttachmentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 var reactionPickerSelectedStyle = lipgloss.NewStyle().Reverse(true)
+var linkStyle = lipgloss.NewStyle().Underline(true).Foreground(accentColor)
 
 func New(ipcClient *ipc.Client, cacheDir string, uz *ueberzug.Client) Model {
-	convList := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	convDelegate := list.NewDefaultDelegate()
+	convDelegate.Styles = newItemStyles()
+	convList := list.New(nil, convDelegate, 0, 0)
 	convList.Title = "Conversations"
+	convList.Styles = newListStyles()
 	convList.SetShowHelp(false)
 
 	compose := textarea.New()
 	compose.Placeholder = "Type a message, Enter to send..."
 	compose.ShowLineNumbers = false
 	compose.SetHeight(2)
+	compose.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	compose.FocusedStyle.Placeholder = lipgloss.NewStyle().Faint(true)
+	compose.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	compose.BlurredStyle.Placeholder = lipgloss.NewStyle().Faint(true)
+	compose.BlurredStyle.Text = lipgloss.NewStyle().Faint(true)
 
 	attachInput := textinput.New()
 	attachInput.Placeholder = "path to file (~ expands to $HOME)"
+	attachInput.PlaceholderStyle = lipgloss.NewStyle().Faint(true)
 
 	newConvInput := textinput.New()
 	newConvInput.Placeholder = "phone number(s), comma-separated for a group"
+	newConvInput.PlaceholderStyle = lipgloss.NewStyle().Faint(true)
 
 	commandInput := textinput.New()
 	commandInput.Placeholder = "command (:q :open :react :preview :attach :new :search :send :help)"
 	commandInput.Prompt = ":"
+	commandInput.PlaceholderStyle = lipgloss.NewStyle().Faint(true)
 
 	return Model{
 		ipcClient:     ipcClient,
@@ -147,7 +159,7 @@ func (m *Model) renderThread(convID string) {
 	offsets := make([]int, len(msgs))
 	lineNo := 0
 	for i, msg := range msgs {
-		t := wrapText(gmclient.MessageText(msg), textWidth)
+		t := wrapText(highlightLinks(gmclient.MessageText(msg)), textWidth)
 		attachments := wrapText(gmclient.AttachmentSummary(msg), paddedWidth)
 		reactions := wrapText(gmclient.ReactionSummary(msg), paddedWidth)
 		if t == "" && attachments == "" && reactions == "" {
@@ -195,6 +207,24 @@ func wrapText(s string, width int) string {
 		return s
 	}
 	return lipgloss.NewStyle().Width(width).Render(s)
+}
+
+// highlightLinks underlines every http(s) URL in s (see linkStyle), so a
+// link reads as clickable without needing a live mouse-hover state.
+func highlightLinks(s string) string {
+	spans := gmclient.LinkSpans(s)
+	if len(spans) == 0 {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, span := range spans {
+		b.WriteString(s[last:span.Start])
+		b.WriteString(linkStyle.Render(span.Text))
+		last = span.End
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 func (m *Model) moveMsgCursor(delta int) {

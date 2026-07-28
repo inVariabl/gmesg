@@ -72,6 +72,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sendResultMsg:
 		if msg.err != nil {
 			m.err = msg.err
+			m.removePendingMessage(msg.convID, msg.pendingID)
 		}
 		m.status = ""
 		return m, nil
@@ -152,7 +153,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if msg.String() == ":" && !m.commanding && !m.attaching && !m.reacting &&
 		!(m.focus == focusList && m.list.FilterState() == list.Filtering) &&
-		!(m.focus == focusList && m.startingConv) {
+		!(m.focus == focusList && m.startingConv) &&
+		!(m.focus == focusThread && m.threadMode == modeInsert) {
 		m.commanding = true
 		m.commandInput.Reset()
 		m.compose.Blur()
@@ -182,18 +184,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.startingConv = true
 			return m, m.newConvInput.Focus()
 		case "enter":
-			item, ok := m.list.SelectedItem().(conversationItem)
-			if !ok {
-				return m, nil
-			}
-			m.activeConvID = item.conv.GetConversationID()
-			m.focus = focusThread
-			m.threadMode = modeNormal
-			m.compose.Blur()
-			m.msgCursor[m.activeConvID] = len(m.messages[m.activeConvID]) - 1
-			m.renderThread(m.activeConvID)
-			m.thread.GotoBottom()
-			return m, fetchThread(m.ipcClient, m.activeConvID)
+			return m.openSelectedConversation()
 		}
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
@@ -267,30 +258,14 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if cur < 0 || cur >= len(msgs) {
 			return m, nil
 		}
-		target := msgs[cur]
-		if m.previewShowing && m.previewMsgID == target.GetMessageID() {
-			m.hidePreview()
-			return m, nil
-		}
-		if m.ueberzug == nil {
-			m.status = "image preview unavailable: install ueberzug to enable it"
-			return m, nil
-		}
-		m.hidePreview()
-		m.status = "Loading preview..."
-		return m, previewImage(m.ipcClient, m.cacheDir, target)
+		return m.togglePreview(msgs[cur])
 	case "o":
 		msgs := m.messages[m.activeConvID]
 		cur := m.msgCursor[m.activeConvID]
 		if cur < 0 || cur >= len(msgs) {
 			return m, nil
 		}
-		target := msgs[cur]
-		if gmclient.AttachmentSummary(target) == "" && len(gmclient.ExtractLinks(target)) == 0 {
-			return m, nil
-		}
-		m.status = "Opening..."
-		return m, openMessage(m.ipcClient, m.cacheDir, target)
+		return m.openTarget(msgs[cur])
 	}
 	return m, nil
 }
@@ -356,7 +331,9 @@ func (m Model) handleThreadInsertKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.compose.Reset()
 		m.pendingAttachments = nil
 		m.status = "Sending..."
-		return m, sendMessage(m.ipcClient, conv, text, attachments)
+		pending := newPendingMessage(conv, text, attachments)
+		m.applyIncomingMessage(pending)
+		return m, sendMessage(m.ipcClient, conv, text, attachments, pending.GetMessageID())
 	}
 	var cmd tea.Cmd
 	m.compose, cmd = m.compose.Update(msg)
@@ -666,20 +643,71 @@ func expandPath(p string) string {
 	return filepath.Join(home, strings.TrimPrefix(p, "~"))
 }
 
+// The default delegate renders each item as a 2-line title+description
+// block with 1 blank line of spacing between items (see
+// list.DefaultDelegate.Render/populatedView), and newListStyles keeps the
+// title bar and status bar at their default 2-row heights each. Together
+// that's a fixed 4-row header above the item rows, 3 rows per item. These
+// stay in sync with the list configuration in New() and newListStyles().
+const (
+	listRowsAboveItems = 4
+	listRowsPerItem    = 3
+)
+
+// listItemIndexAt maps a terminal row to the conversation list item
+// rendered there, accounting for the header rows and the current page.
+// bubbles' list.Model doesn't process mouse events itself, so this is our
+// own hit-test.
+func listItemIndexAt(m Model, y int) (int, bool) {
+	if m.list.FilterState() == list.Filtering {
+		return 0, false
+	}
+	row := y - listRowsAboveItems
+	if row < 0 {
+		return 0, false
+	}
+	perPage := m.list.Paginator.PerPage
+	if perPage <= 0 {
+		return 0, false
+	}
+	rel := row / listRowsPerItem
+	if rel >= perPage {
+		return 0, false
+	}
+	idx := m.list.Paginator.Page*perPage + rel
+	if idx < 0 || idx >= len(m.list.VisibleItems()) {
+		return 0, false
+	}
+	return idx, true
+}
+
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.MouseWheelUp, tea.MouseWheelDown:
-		delta := 1
-		if msg.Type == tea.MouseWheelUp {
-			delta = -1
-		}
+	if m.commanding {
+		return m, nil
+	}
+
+	// Use Button/Action rather than the deprecated Type: under the SGR mouse
+	// protocol (and always under the older X10 protocol) a button release
+	// is reported with no button number, so Type normalizes every release
+	// to MouseRelease and a left-click release can never match MouseLeft.
+	// Button stays reliable on press in both protocols, so that's what we
+	// key clicks off of.
+	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		up := msg.Button == tea.MouseButtonWheelUp
 		switch m.focus {
 		case focusList:
-			var cmd tea.Cmd
-			m.list, cmd = m.list.Update(msg)
-			return m, cmd
+			if m.startingConv {
+				return m, nil
+			}
+			if up {
+				m.list.CursorUp()
+			} else {
+				m.list.CursorDown()
+			}
+			return m, nil
 		case focusThread:
-			if delta < 0 {
+			if up {
 				m.thread.LineUp(3)
 			} else {
 				m.thread.LineDown(3)
@@ -687,28 +715,190 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-	case tea.MouseLeft:
-		if msg.Action == tea.MouseActionRelease {
-			switch m.focus {
-			case focusList:
-				var cmd tea.Cmd
-				m.list, cmd = m.list.Update(msg)
-				return m, cmd
-			case focusThread:
-				if m.threadMode == modeNormal {
-					composeY := m.height - composeHeight - 1
-					if msg.Y >= composeY {
-						m.threadMode = modeInsert
-						m.compose.Focus()
-						m.hidePreview()
-						m.renderThread(m.activeConvID)
-						return m, nil
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		switch m.focus {
+		case focusList:
+			if m.startingConv {
+				return m, nil
+			}
+			if idx, ok := listItemIndexAt(m, msg.Y); ok {
+				m.list.Select(idx)
+				return m.openSelectedConversation()
+			}
+			return m, nil
+		case focusThread:
+			if m.threadMode != modeNormal || m.reacting {
+				return m, nil
+			}
+			composeY := m.height - composeHeight - 1
+			if msg.Y >= composeY {
+				m.threadMode = modeInsert
+				m.compose.Focus()
+				m.hidePreview()
+				m.renderThread(m.activeConvID)
+				return m, nil
+			}
+			if target, ok := m.senderAt(msg.Y); ok {
+				conv := m.conversations[m.activeConvID]
+				if !gmclient.SenderIsSelf(conv, target) {
+					participantID := gmclient.SenderParticipantID(target)
+					if convID, ok := m.findDirectConversation(participantID); ok && convID != m.activeConvID {
+						return m.openConversationByID(convID)
 					}
 				}
 			}
+			if idx, ok := m.messageIndexAt(msg.Y); ok {
+				target := m.messages[m.activeConvID][idx]
+				m.setMsgCursor(idx)
+				if _, ok := gmclient.FirstImageAttachment(target); ok {
+					return m.togglePreview(target)
+				}
+				return m.openTarget(target)
+			}
+			return m, nil
 		}
+
+	case tea.MouseButtonRight:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		if m.focus != focusThread || m.threadMode != modeNormal || m.reacting {
+			return m, nil
+		}
+		composeY := m.height - composeHeight - 1
+		if msg.Y >= composeY {
+			return m, nil
+		}
+		if idx, ok := m.messageIndexAt(msg.Y); ok {
+			m.setMsgCursor(idx)
+			m.reacting = true
+			m.reactionCursor = 0
+		}
+		return m, nil
 	}
 	return m, nil
+}
+
+// threadHeaderRows is the number of rows the conversation title takes up
+// above the message viewport (see the focusThread branch of View() in
+// view.go).
+const threadHeaderRows = 1
+
+// senderAt returns the message whose "name · time" header line is rendered
+// at terminal row y in the thread view, so a click there can jump to that
+// sender's own conversation. It relies on msgLineOffsets, which renderThread
+// keeps in sync with the message list's line positions.
+func (m Model) senderAt(y int) (*gmproto.Message, bool) {
+	row := y - threadHeaderRows
+	if row < 0 || row >= m.thread.Height {
+		return nil, false
+	}
+	line := m.thread.YOffset + row
+	msgs := m.messages[m.activeConvID]
+	for i, off := range m.msgLineOffsets {
+		if off == line && i < len(msgs) {
+			return msgs[i], true
+		}
+	}
+	return nil, false
+}
+
+// messageIndexAt returns the index of the message rendered anywhere in its
+// block (header, text, attachment, or reaction lines) at terminal row y in
+// the thread view -- unlike senderAt, which only matches the header line.
+func (m Model) messageIndexAt(y int) (int, bool) {
+	row := y - threadHeaderRows
+	if row < 0 || row >= m.thread.Height {
+		return 0, false
+	}
+	line := m.thread.YOffset + row
+	msgs := m.messages[m.activeConvID]
+	idx := -1
+	for i, off := range m.msgLineOffsets {
+		if off > line {
+			break
+		}
+		idx = i
+	}
+	if idx < 0 || idx >= len(msgs) {
+		return 0, false
+	}
+	return idx, true
+}
+
+// setMsgCursor moves the message cursor straight to idx and re-renders.
+// Unlike moveMsgCursor (used for J/K keyboard navigation), it doesn't touch
+// the viewport scroll position or any open preview -- for a mouse click the
+// target is already on screen, and callers that care about the preview
+// (togglePreview) need to read its prior state themselves first.
+func (m *Model) setMsgCursor(idx int) {
+	m.msgCursor[m.activeConvID] = idx
+	m.renderThread(m.activeConvID)
+}
+
+// togglePreview shows target's image in the ueberzug overlay, or hides it
+// if it's the one already showing. Shared by the "p" key and clicking an
+// image message.
+func (m Model) togglePreview(target *gmproto.Message) (tea.Model, tea.Cmd) {
+	if m.previewShowing && m.previewMsgID == target.GetMessageID() {
+		m.hidePreview()
+		return m, nil
+	}
+	if m.ueberzug == nil {
+		m.status = "image preview unavailable: install ueberzug to enable it"
+		return m, nil
+	}
+	m.hidePreview()
+	m.status = "Loading preview..."
+	return m, previewImage(m.ipcClient, m.cacheDir, target)
+}
+
+// openTarget opens target's first link or attachment with the system
+// default handler. Shared by the "o" key and clicking a message with a
+// link or attachment.
+func (m Model) openTarget(target *gmproto.Message) (tea.Model, tea.Cmd) {
+	if gmclient.AttachmentSummary(target) == "" && len(gmclient.ExtractLinks(target)) == 0 {
+		return m, nil
+	}
+	m.status = "Opening..."
+	return m, openMessage(m.ipcClient, m.cacheDir, target)
+}
+
+// findDirectConversation returns the ID of the cached non-group conversation
+// whose only other participant is participantID, if one has been loaded.
+func (m Model) findDirectConversation(participantID string) (string, bool) {
+	for id, conv := range m.conversations {
+		if conv.GetIsGroupChat() {
+			continue
+		}
+		others := conv.GetOtherParticipants()
+		if len(others) == 1 && others[0] == participantID {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func (m Model) openSelectedConversation() (tea.Model, tea.Cmd) {
+	item, ok := m.list.SelectedItem().(conversationItem)
+	if !ok {
+		return m, nil
+	}
+	return m.openConversationByID(item.conv.GetConversationID())
+}
+
+func (m Model) openConversationByID(convID string) (tea.Model, tea.Cmd) {
+	m.activeConvID = convID
+	m.focus = focusThread
+	m.threadMode = modeNormal
+	m.compose.Blur()
+	m.msgCursor[convID] = len(m.messages[convID]) - 1
+	m.renderThread(convID)
+	m.thread.GotoBottom()
+	return m, fetchThread(m.ipcClient, convID)
 }
 
 func (m *Model) handleGMEvent(evt any) tea.Cmd {
@@ -743,6 +933,7 @@ func (m *Model) handleGMEvent(evt any) tea.Cmd {
 func (m *Model) applyIncomingMessage(msg *gmproto.Message) {
 	convID := msg.GetConversationID()
 	existing := m.messages[convID]
+	conv := m.conversations[convID]
 
 	replaced := false
 	for i, e := range existing {
@@ -750,6 +941,18 @@ func (m *Model) applyIncomingMessage(msg *gmproto.Message) {
 			existing[i] = msg
 			replaced = true
 			break
+		}
+	}
+	// The daemon's confirmation of a message we sent ourselves: swap it in
+	// for the optimistic placeholder newPendingMessage added, rather than
+	// appending a second copy.
+	if !replaced && !isPendingMessageID(msg.GetMessageID()) && conv != nil && msg.GetParticipantID() == conv.GetDefaultOutgoingID() {
+		for i, e := range existing {
+			if isPendingMessageID(e.GetMessageID()) {
+				existing[i] = msg
+				replaced = true
+				break
+			}
 		}
 	}
 	wasAtBottom := len(existing) == 0 || m.msgCursor[convID] >= len(existing)-1
@@ -764,7 +967,7 @@ func (m *Model) applyIncomingMessage(msg *gmproto.Message) {
 	if convID == m.activeConvID {
 		m.renderThread(convID)
 	}
-	if conv := m.conversations[convID]; conv != nil {
+	if conv != nil {
 		conv.LatestMessage = &gmproto.LatestMessage{
 			DisplayContent: gmclient.MessageText(msg),
 		}
@@ -775,6 +978,30 @@ func (m *Model) applyIncomingMessage(msg *gmproto.Message) {
 		}
 		conv.LastMessageTimestamp = msg.GetTimestamp()
 		m.refreshListItems()
+	}
+}
+
+// removePendingMessage drops the optimistic placeholder newPendingMessage
+// added for a send that then failed, so the thread doesn't keep showing a
+// message as sent when it wasn't.
+func (m *Model) removePendingMessage(convID, pendingID string) {
+	if pendingID == "" {
+		return
+	}
+	existing := m.messages[convID]
+	for i, e := range existing {
+		if e.GetMessageID() != pendingID {
+			continue
+		}
+		existing = append(existing[:i], existing[i+1:]...)
+		m.messages[convID] = existing
+		if cur := m.msgCursor[convID]; cur >= len(existing) {
+			m.msgCursor[convID] = len(existing) - 1
+		}
+		if convID == m.activeConvID {
+			m.renderThread(convID)
+		}
+		return
 	}
 }
 

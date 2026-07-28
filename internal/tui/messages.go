@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
@@ -13,6 +15,47 @@ import (
 	"github.com/inVariabl/gmesg/internal/gmclient"
 	"github.com/inVariabl/gmesg/internal/ipc"
 )
+
+// pendingMessageIDPrefix marks the synthetic MessageID gmesg gives a
+// message it's optimistically echoed into the thread right after Send,
+// before the daemon confirms it. applyIncomingMessage looks for this prefix
+// to swap the placeholder out for the real message once it arrives, instead
+// of appending a duplicate.
+const pendingMessageIDPrefix = "pending:"
+
+func isPendingMessageID(id string) bool {
+	return strings.HasPrefix(id, pendingMessageIDPrefix)
+}
+
+// newPendingMessage builds a local stand-in for a message the user just
+// hit Send on, so it shows up in the thread and list immediately instead of
+// waiting for the round trip through the daemon to echo it back.
+func newPendingMessage(conv *gmproto.Conversation, text string, attachmentPaths []string) *gmproto.Message {
+	content := text
+	if len(attachmentPaths) > 0 {
+		names := make([]string, len(attachmentPaths))
+		for i, p := range attachmentPaths {
+			names[i] = filepath.Base(p)
+		}
+		summary := "📎 " + strings.Join(names, "  ")
+		if content != "" {
+			content += "\n" + summary
+		} else {
+			content = summary
+		}
+	}
+	return &gmproto.Message{
+		MessageID:      fmt.Sprintf("%s%d", pendingMessageIDPrefix, time.Now().UnixNano()),
+		ConversationID: conv.GetConversationID(),
+		ParticipantID:  conv.GetDefaultOutgoingID(),
+		Timestamp:      time.Now().UnixMicro(),
+		MessageInfo: []*gmproto.MessageInfo{{
+			Data: &gmproto.MessageInfo_MessageContent{
+				MessageContent: &gmproto.MessageContent{Content: content},
+			},
+		}},
+	}
+}
 
 type conversationsLoadedMsg struct {
 	convs []*gmproto.Conversation
@@ -26,8 +69,9 @@ type threadLoadedMsg struct {
 }
 
 type sendResultMsg struct {
-	convID string
-	err    error
+	convID    string
+	pendingID string
+	err       error
 }
 
 type reactionResultMsg struct {
@@ -111,7 +155,7 @@ func resolveConversation(ipcClient *ipc.Client, phones []string) tea.Cmd {
 	}
 }
 
-func sendMessage(ipcClient *ipc.Client, conv *gmproto.Conversation, text string, attachmentPaths []string) tea.Cmd {
+func sendMessage(ipcClient *ipc.Client, conv *gmproto.Conversation, text string, attachmentPaths []string, pendingID string) tea.Cmd {
 	return func() tea.Msg {
 		params := map[string]any{
 			"conv_id":          conv.GetConversationID(),
@@ -122,7 +166,7 @@ func sendMessage(ipcClient *ipc.Client, conv *gmproto.Conversation, text string,
 			ConvID string `json:"conv_id"`
 		}
 		err := ipcClient.Call("send_message", params, &result)
-		return sendResultMsg{convID: conv.GetConversationID(), err: err}
+		return sendResultMsg{convID: conv.GetConversationID(), pendingID: pendingID, err: err}
 	}
 }
 

@@ -42,7 +42,7 @@ func (m Model) View() string {
 		case m.attaching:
 			status = "-- ATTACH -- enter confirm path · esc cancel"
 		case m.threadMode == modeNormal:
-			status = "-- NORMAL -- j/k/gg/G/ctrl-d/ctrl-u scroll · J/K select msg · r react · o open attachment/link · p preview image · i insert · q back"
+			status = "-- NORMAL -- r react · o open attachment/link · p preview image · i insert · q back"
 		default:
 			status = "-- INSERT -- enter send · ctrl-t attach · esc normal mode"
 		}

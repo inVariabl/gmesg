@@ -333,6 +333,7 @@ func (m Model) handleThreadInsertKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "Sending..."
 		pending := newPendingMessage(conv, text, attachments)
 		m.applyIncomingMessage(pending)
+		m.thread.GotoBottom()
 		return m, sendMessage(m.ipcClient, conv, text, attachments, pending.GetMessageID())
 	}
 	var cmd tea.Cmd
@@ -965,7 +966,14 @@ func (m *Model) applyIncomingMessage(msg *gmproto.Message) {
 	}
 
 	if convID == m.activeConvID {
+		// SetContent (inside renderThread) leaves YOffset exactly where it
+		// was, so appending a message the user was already scrolled to the
+		// bottom of otherwise leaves the view stuck one message behind.
+		viewAtBottom := m.thread.AtBottom()
 		m.renderThread(convID)
+		if viewAtBottom {
+			m.thread.GotoBottom()
+		}
 	}
 	if conv != nil {
 		conv.LatestMessage = &gmproto.LatestMessage{

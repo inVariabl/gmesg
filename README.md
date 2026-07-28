@@ -54,6 +54,8 @@ messages.
 
 ## License
 
-AGPL-3.0. This project links `go.mau.fi/mautrix-gmessages/pkg/libgm`,
-which is AGPL-3.0 licensed; since Go links statically, the combined binary
-is a derivative work under the same license.
+GPL-3.0. This project links `go.mau.fi/mautrix-gmessages/pkg/libgm`, which
+is AGPL-3.0 licensed. GPLv3 §13 grants explicit permission to combine
+GPLv3 and AGPLv3 works; the combination is unaffected by this beyond the
+AGPL's network-source-disclosure clause applying to the combined binary
+if run as a network service.

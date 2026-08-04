@@ -132,7 +132,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.msgCursor[convID] = len(m.messages[convID]) - 1
 		m.renderThread(convID)
 		m.thread.GotoBottom()
-		return m, fetchThread(m.ipcClient, convID)
+		return m, tea.Batch(tea.ClearScreen, fetchThread(m.ipcClient, convID))
 
 	case gmEventMsg:
 		cmd := m.handleGMEvent(msg.evt)
@@ -222,7 +222,7 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = focusList
 		m.hidePreview()
 		m.renderThread(m.activeConvID)
-		return m, nil
+		return m, tea.ClearScreen
 	case "i", "a":
 		m.threadMode = modeInsert
 		m.compose.Focus()
@@ -243,8 +243,10 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.thread.GotoBottom()
 	case "J":
 		m.moveMsgCursor(1)
+		return m, tea.ClearScreen
 	case "K":
 		m.moveMsgCursor(-1)
+		return m, tea.ClearScreen
 	case "r":
 		msgs := m.messages[m.activeConvID]
 		cur := m.msgCursor[m.activeConvID]
@@ -535,7 +537,7 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.threadMode = modeNormal
 		m.compose.Blur()
 		m.renderThread(m.activeConvID)
-		return m, nil
+		return m, tea.ClearScreen
 
 	case "open":
 		msgs := m.messages[m.activeConvID]
@@ -899,7 +901,12 @@ func (m Model) openConversationByID(convID string) (tea.Model, tea.Cmd) {
 	m.msgCursor[convID] = len(m.messages[convID]) - 1
 	m.renderThread(convID)
 	m.thread.GotoBottom()
-	return m, fetchThread(m.ipcClient, convID)
+	// Switching from the list layout to the thread layout changes the
+	// screen's total line count out from under bubbletea's line-diffing
+	// renderer, which can leave its cache of "what's on screen" pointing
+	// at the wrong row for the rest of the session. Force a full repaint
+	// so it re-syncs against reality instead of drifting.
+	return m, tea.Batch(tea.ClearScreen, fetchThread(m.ipcClient, convID))
 }
 
 func (m *Model) handleGMEvent(evt any) tea.Cmd {

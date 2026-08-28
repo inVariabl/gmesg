@@ -382,6 +382,7 @@ func (m Model) handleAttachKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				completed += "/"
 			}
 			m.attachInput.SetValue(completed)
+			m.attachInput.CursorEnd()
 			return m, nil
 		}
 		var names []string

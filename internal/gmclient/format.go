@@ -192,6 +192,67 @@ func LinkSpans(text string) []LinkSpan {
 	return spans
 }
 
+// otpKeywordPattern matches words that typically sit right next to a
+// one-time passcode in an SMS ("code", "OTP", "PIN", ...), used to pick the
+// right digit run out of a message with more than one number in it (an
+// order number alongside the actual code, say).
+var otpKeywordPattern = regexp.MustCompile(`(?i)\b(?:verification|security|access|confirmation|login|auth(?:entication)?)?\s*(?:codes?|otp|pin|passcode)\b`)
+
+// otpCandidatePattern matches a run of digits that could plausibly be a
+// one-time passcode: 4-8 digits, optionally split into two groups by a
+// single space or dash (e.g. "123 456").
+var otpCandidatePattern = regexp.MustCompile(`\b\d{2,4}[- ]\d{2,4}\b|\b\d{4,8}\b`)
+
+// ExtractCode finds the one-time passcode in a message's text, if any. A
+// message with more than one digit run (an order number next to the actual
+// code, say) is disambiguated by proximity to a code-related keyword like
+// "code" or "OTP"; with no such keyword present, the first candidate wins.
+// Any separator inside the match is stripped from the returned code.
+func ExtractCode(msg *gmproto.Message) (string, bool) {
+	text := MessageText(msg)
+	candidates := otpCandidatePattern.FindAllStringIndex(text, -1)
+	if len(candidates) == 0 {
+		return "", false
+	}
+	best := candidates[0]
+	if keywords := otpKeywordPattern.FindAllStringIndex(text, -1); len(keywords) > 0 {
+		bestDist := nearestGap(best, keywords)
+		for _, c := range candidates[1:] {
+			if d := nearestGap(c, keywords); d < bestDist {
+				best, bestDist = c, d
+			}
+		}
+	}
+	code := strings.Map(func(r rune) rune {
+		if r == '-' || r == ' ' {
+			return -1
+		}
+		return r
+	}, text[best[0]:best[1]])
+	return code, true
+}
+
+// nearestGap returns the smallest gap, in characters, between span and any
+// of the spans in others (0 if they overlap).
+func nearestGap(span []int, others [][]int) int {
+	min := -1
+	for _, o := range others {
+		var d int
+		switch {
+		case span[1] <= o[0]:
+			d = o[0] - span[1]
+		case o[1] <= span[0]:
+			d = span[0] - o[1]
+		default:
+			d = 0
+		}
+		if min == -1 || d < min {
+			min = d
+		}
+	}
+	return min
+}
+
 // ReactionSummary renders a message's reactions as a single display line,
 // e.g. "👍 2  ❤️ 1". Returns "" if there are none.
 func ReactionSummary(msg *gmproto.Message) string {

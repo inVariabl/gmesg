@@ -84,6 +84,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		return m, nil
 
+	case yankResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.status = ""
+			return m, nil
+		}
+		m.err = nil
+		m.status = "Yanked " + msg.label
+		return m, nil
+
 	case openResultMsg:
 		m.status = ""
 		if msg.err != nil {
@@ -217,6 +227,17 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	wasPendingY := m.pendingY
+	m.pendingY = false
+	if wasPendingY {
+		switch key {
+		case "y":
+			return m.yankMessage(false)
+		case "c":
+			return m.yankMessage(true)
+		}
+	}
+
 	switch key {
 	case "q", "esc":
 		m.focus = focusList
@@ -268,6 +289,8 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openTarget(msgs[cur])
+	case "y":
+		m.pendingY = true
 	}
 	return m, nil
 }
@@ -869,6 +892,33 @@ func (m Model) openTarget(target *gmproto.Message) (tea.Model, tea.Cmd) {
 	}
 	m.status = "Opening..."
 	return m, openMessage(m.ipcClient, m.cacheDir, target)
+}
+
+// yankMessage copies the selected message to the clipboard: its one-time
+// passcode for "yc" (see gmclient.ExtractCode), or its full text for "yy".
+func (m Model) yankMessage(codeOnly bool) (tea.Model, tea.Cmd) {
+	msgs := m.messages[m.activeConvID]
+	cur := m.msgCursor[m.activeConvID]
+	if cur < 0 || cur >= len(msgs) {
+		return m, nil
+	}
+	target := msgs[cur]
+	if codeOnly {
+		code, ok := gmclient.ExtractCode(target)
+		if !ok {
+			m.err = fmt.Errorf("no code found in selected message")
+			m.status = ""
+			return m, nil
+		}
+		return m, copyToClipboard(code, "code")
+	}
+	text := gmclient.MessageText(target)
+	if text == "" {
+		m.err = fmt.Errorf("selected message has no text to yank")
+		m.status = ""
+		return m, nil
+	}
+	return m, copyToClipboard(text, "message")
 }
 
 // findDirectConversation returns the ID of the cached non-group conversation

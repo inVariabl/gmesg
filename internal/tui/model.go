@@ -41,6 +41,7 @@ type Model struct {
 	focus      focus
 	threadMode threadMode
 	pendingG   bool
+	pendingY   bool
 	list       list.Model
 	thread     viewport.Model
 	compose    textarea.Model

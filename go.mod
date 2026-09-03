@@ -3,6 +3,8 @@ module github.com/inVariabl/gmesg
 go 1.26.5
 
 require (
+	github.com/atotto/clipboard v0.1.4
+	github.com/aymanbagabas/go-osc52/v2 v2.0.1
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -10,11 +12,10 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
 	go.mau.fi/mautrix-gmessages v0.2605.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
-	github.com/atotto/clipboard v0.1.4 // indirect
-	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
@@ -44,6 +45,5 @@ require (
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )

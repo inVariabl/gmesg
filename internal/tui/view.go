@@ -1,10 +1,22 @@
 package tui
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 func (m Model) View() string {
 	if !m.ready {
 		return "Loading..."
+	}
+	if m.loadingConversations {
+		// Pad the dots out to a fixed width so the growing "..." doesn't
+		// change the string's length and shift it within the centered
+		// placement below.
+		dots := strings.Repeat(".", m.loadingDots) + strings.Repeat(" ", 3-m.loadingDots)
+		text := "Loading conversations" + dots
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, text)
 	}
 
 	var body string

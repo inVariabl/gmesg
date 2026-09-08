@@ -11,6 +11,7 @@ func newTestModelWithConversations(convs ...*gmproto.Conversation) Model {
 	m := New(nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model := updated.(Model)
+	model.loadingConversations = false
 	for _, c := range convs {
 		model.conversations[c.GetConversationID()] = c
 	}

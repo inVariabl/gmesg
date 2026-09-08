@@ -97,6 +97,22 @@ type conversationResolvedMsg struct {
 
 type gmEventMsg struct{ evt any }
 
+// loadingTickMsg drives the "..." animation on the startup loading screen
+// (see loadingTick).
+type loadingTickMsg struct{}
+
+// loadingDotInterval is how often the loading screen's dots advance.
+const loadingDotInterval = 500 * time.Millisecond
+
+// loadingTick schedules the next frame of the loading screen's dot
+// animation. The caller stops the animation simply by not rescheduling
+// once it's no longer needed, rather than cancelling anything.
+func loadingTick() tea.Cmd {
+	return tea.Tick(loadingDotInterval, func(time.Time) tea.Msg {
+		return loadingTickMsg{}
+	})
+}
+
 func fetchConversations(ipcClient *ipc.Client) tea.Cmd {
 	return func() tea.Msg {
 		var result struct {

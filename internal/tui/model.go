@@ -63,10 +63,10 @@ type Model struct {
 	startingConv bool
 	newConvInput textinput.Model
 
-	commanding       bool
-	commandInput     textinput.Model
-	commandMatches   []string
-	commandMatchIdx  int
+	commanding      bool
+	commandInput    textinput.Model
+	commandMatches  []string
+	commandMatchIdx int
 
 	previewShowing bool
 	previewMsgID   string
@@ -77,6 +77,9 @@ type Model struct {
 
 	width, height int
 	ready         bool
+
+	loadingConversations bool
+	loadingDots          int
 }
 
 var statusStyle = lipgloss.NewStyle().Faint(true).Padding(0, 1)
@@ -133,12 +136,14 @@ func New(ipcClient *ipc.Client, cacheDir string, uz *ueberzug.Client) Model {
 		conversations: map[string]*gmproto.Conversation{},
 		messages:      map[string][]*gmproto.Message{},
 		msgCursor:     map[string]int{},
-		status:        "Loading conversations...",
+
+		loadingConversations: true,
+		loadingDots:          1,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(fetchConversations(m.ipcClient), waitForEvent(m.ipcClient))
+	return tea.Batch(fetchConversations(m.ipcClient), waitForEvent(m.ipcClient), loadingTick())
 }
 
 func (m *Model) renderThread(convID string) {

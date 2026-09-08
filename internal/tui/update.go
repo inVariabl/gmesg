@@ -44,6 +44,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case conversationsLoadedMsg:
+		m.loadingConversations = false
 		if msg.err != nil {
 			m.err = msg.err
 			m.status = ""
@@ -55,6 +56,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.refreshListItems()
 		return m, nil
+
+	case loadingTickMsg:
+		if !m.loadingConversations {
+			return m, nil
+		}
+		m.loadingDots = m.loadingDots%3 + 1
+		return m, loadingTick()
 
 	case threadLoadedMsg:
 		if msg.err != nil {

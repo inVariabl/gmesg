@@ -108,7 +108,11 @@ func LoadSession(profile string) (*libgm.AuthData, *libgm.PushKeys, error) {
 }
 
 // SaveSession persists AuthData and PushKeys to disk with owner-only
-// permissions, since this file is as sensitive as a login cookie.
+// permissions, since this file is as sensitive as a login cookie. The write
+// goes through a temp file plus rename so a process killed mid-write (crash,
+// OOM, power loss) can never leave behind a truncated, unparseable session
+// file -- the rename is atomic, so readers always see either the old
+// complete file or the new one.
 func SaveSession(profile string, auth *libgm.AuthData, pushKeys *libgm.PushKeys) error {
 	dir, err := DataDir(profile)
 	if err != nil {
@@ -125,8 +129,12 @@ func SaveSession(profile string, auth *libgm.AuthData, pushKeys *libgm.PushKeys)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return fmt.Errorf("write session file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replace session file: %w", err)
 	}
 	return nil
 }

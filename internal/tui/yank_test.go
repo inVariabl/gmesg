@@ -96,6 +96,36 @@ func TestYyYanksTheFullMessageText(t *testing.T) {
 	}
 }
 
+func TestYlYanksTheFirstLink(t *testing.T) {
+	got := stubNativeClipboard(t)
+
+	text := "Check this out: https://example.com/foo and also https://example.com/bar"
+	msg := textMessage("m1", "them", text, 1)
+	m := newTestThreadModel(msg)
+
+	m = pressKeys(t, m, "y", "l")
+
+	if *got != "https://example.com/foo" {
+		t.Fatalf("expected the yanked text to be %q, got %q", "https://example.com/foo", *got)
+	}
+	if m.status != "Yanked link" {
+		t.Fatalf("expected status %q, got %q", "Yanked link", m.status)
+	}
+}
+
+func TestYlWithNoLinkSetsAnError(t *testing.T) {
+	stubNativeClipboard(t)
+
+	msg := textMessage("m1", "them", "Running a bit late, be there in ten.", 1)
+	m := newTestThreadModel(msg)
+
+	m = pressKeys(t, m, "y", "l")
+
+	if m.err == nil {
+		t.Fatal("expected an error to be set when the message has no link")
+	}
+}
+
 func TestYcWithNoCodeSetsAnError(t *testing.T) {
 	stubNativeClipboard(t)
 

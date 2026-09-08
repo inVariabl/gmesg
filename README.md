@@ -15,8 +15,9 @@ Early development. Working so far:
 - `gmesg` — interactive TUI with vim-style modal navigation (list: `j`/`k`/`gg`/`G`;
   thread: normal mode to scroll, `i`/`a` to compose, `Esc` to go back a level,
   `yy` to yank the selected message's full text, `yc` to yank just its
-  one-time passcode -- uses `xclip`/`xsel`/`wl-copy` if one is installed,
-  otherwise falls back to an OSC52 escape sequence)
+  one-time passcode, `yl` to yank its first link -- uses
+  `xclip`/`xsel`/`wl-copy` if one is installed, otherwise falls back to an
+  OSC52 escape sequence)
 - `gmesg daemon` — background listener that fires `notify-send` on incoming messages
 
 Not yet implemented: attachments, group creation from inside the TUI,

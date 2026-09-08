@@ -232,9 +232,11 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if wasPendingY {
 		switch key {
 		case "y":
-			return m.yankMessage(false)
+			return m.yankMessage(yankFullText)
 		case "c":
-			return m.yankMessage(true)
+			return m.yankMessage(yankCode)
+		case "l":
+			return m.yankMessage(yankLink)
 		}
 	}
 
@@ -894,16 +896,28 @@ func (m Model) openTarget(target *gmproto.Message) (tea.Model, tea.Cmd) {
 	return m, openMessage(m.ipcClient, m.cacheDir, target)
 }
 
-// yankMessage copies the selected message to the clipboard: its one-time
-// passcode for "yc" (see gmclient.ExtractCode), or its full text for "yy".
-func (m Model) yankMessage(codeOnly bool) (tea.Model, tea.Cmd) {
+// yankKind selects what part of the selected message yankMessage copies to
+// the clipboard.
+type yankKind int
+
+const (
+	yankFullText yankKind = iota // "yy": the message's full text
+	yankCode                     // "yc": its one-time passcode
+	yankLink                     // "yl": its first link
+)
+
+// yankMessage copies part of the selected message to the clipboard: its
+// one-time passcode for "yc" (see gmclient.ExtractCode), its first link for
+// "yl" (see gmclient.ExtractLinks), or its full text for "yy".
+func (m Model) yankMessage(kind yankKind) (tea.Model, tea.Cmd) {
 	msgs := m.messages[m.activeConvID]
 	cur := m.msgCursor[m.activeConvID]
 	if cur < 0 || cur >= len(msgs) {
 		return m, nil
 	}
 	target := msgs[cur]
-	if codeOnly {
+	switch kind {
+	case yankCode:
 		code, ok := gmclient.ExtractCode(target)
 		if !ok {
 			m.err = fmt.Errorf("no code found in selected message")
@@ -911,14 +925,23 @@ func (m Model) yankMessage(codeOnly bool) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, copyToClipboard(code, "code")
+	case yankLink:
+		links := gmclient.ExtractLinks(target)
+		if len(links) == 0 {
+			m.err = fmt.Errorf("no link found in selected message")
+			m.status = ""
+			return m, nil
+		}
+		return m, copyToClipboard(links[0], "link")
+	default:
+		text := gmclient.MessageText(target)
+		if text == "" {
+			m.err = fmt.Errorf("selected message has no text to yank")
+			m.status = ""
+			return m, nil
+		}
+		return m, copyToClipboard(text, "message")
 	}
-	text := gmclient.MessageText(target)
-	if text == "" {
-		m.err = fmt.Errorf("selected message has no text to yank")
-		m.status = ""
-		return m, nil
-	}
-	return m, copyToClipboard(text, "message")
 }
 
 // findDirectConversation returns the ID of the cached non-group conversation

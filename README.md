@@ -30,6 +30,10 @@ go build -o gmesg ./cmd/gmesg
 ./gmesg pair
 ```
 
+`./build.sh` builds and installs both the binary (`~/.local/bin/gmesg`) and
+its man page (`~/.local/share/man/man1/gmesg.1`) -- `man gmesg` covers every
+flag, TUI key binding, and file location in one place.
+
 ### Running more than one gmesg at once
 
 A paired session (`--profile`) is a single device identity, the same way

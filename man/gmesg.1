@@ -1,0 +1,269 @@
+.TH GMESG 1 "September 2026" "gmesg" "User Commands"
+.SH NAME
+gmesg \- a terminal client for Google Messages
+.SH SYNOPSIS
+.B gmesg
+.RB [ \-\-profile
+.IR name ]
+.RB [ \-p
+.IR phone ]
+.RB [ \-m
+.IR text ]
+.RB [ \-f
+.IR file ]
+.br
+.B gmesg pair
+.RB [ \-v ]
+.br
+.B gmesg daemon
+.SH DESCRIPTION
+.B gmesg
+is a terminal client for Google Messages (RCS/SMS), built on
+.B libgm
+\(em the protocol library behind the mautrix-gmessages Matrix bridge \(em
+which communicates directly with Google's pairing and messaging protocol,
+without browser automation.
+.PP
+There are three ways to run it:
+.IP \(bu 2
+.B gmesg pair
+links your phone once, via a QR code rendered in the terminal.
+.IP \(bu 2
+.B gmesg daemon
+runs in the background, holding the connection to Google's servers open
+and firing a desktop notification for every incoming message.
+.IP \(bu 2
+.B gmesg
+with no subcommand opens the interactive TUI, or, given
+.BR \-p / \-m / \-f ,
+sends a single message and exits without opening the TUI at all.
+.PP
+The TUI does not talk to Google directly \(em it connects to
+.B gmesg daemon
+over a Unix domain socket, so the daemon and the TUI (and any scripted
+.B \-p / \-m
+sends) all share one live connection and one pairing. Start the daemon
+before the TUI:
+.PP
+.RS 4
+gmesg daemon &
+.br
+gmesg
+.RE
+.SH COMMANDS
+.TP
+.B pair
+Display a QR code in the terminal. Scan it from the phone being paired,
+via Google Messages > Settings > Device pairing > Pair a device. The code
+refreshes automatically every 30 seconds until scanned. If a session
+already exists for the selected profile, pairing again replaces it.
+.RS
+.TP
+.BR \-v ", " \-\-verbose
+Show debug-level protocol logs while pairing.
+.RE
+.TP
+.B daemon
+Connect and stay connected in the background. Runs
+.B notify-send
+for every incoming message (sender and text, or an attachment summary
+when the message has no text), and serves the Unix socket the TUI and
+one-shot sends connect through. Intended to be started from a
+login/autostart script, in the same manner as
+.BR dunst (1).
+Terminates on SIGINT or SIGTERM (e.g. Ctrl-C), saving the session before
+exit.
+.SH OPTIONS
+.TP
+.BI \-\-profile " name"
+Paired identity to use. Defaults to the plain, un-namespaced session.
+Running the TUI and the daemon concurrently against the same profile is
+safe: they share a single connection through the socket. Two
+.B daemon
+instances against the
+.I same
+profile, however, contend for one long-poll connection to Google's
+servers and can corrupt the saved session. Assign each independent
+pairing its own
+.B \-\-profile
+name.
+.TP
+.BI \-p ", " \-\-phone " numbers"
+Recipient phone number(s) for a one-shot send, comma-separated for a
+group. Requires the daemon to already be running.
+.TP
+.BI \-m ", " \-\-message " text"
+Message text to send. Optional if at least one
+.B \-f
+is given.
+.TP
+.BI \-f ", " \-\-file " path"
+Attach a file (photo, gif, video, ...) to a one-shot send. Repeatable for
+multiple attachments.
+.SH INTERACTIVE TUI
+The TUI has two panes: a conversation list and a message thread, plus a
+vim-style modal thread view.
+.SS Conversation list
+.TP
+.B j / k / down / up
+Move the selection.
+.TP
+.B gg / G
+Jump to the top / bottom of the list.
+.TP
+.B /
+Filter the list (built-in fuzzy filter).
+.TP
+.B enter
+Open the selected conversation.
+.TP
+.B n
+Start a new conversation (prompts for a recipient).
+.TP
+.B q
+Quit gmesg.
+.SS Thread \(em normal mode
+.TP
+.B j / k / down / up
+Scroll one line.
+.TP
+.B ctrl-d / ctrl-u
+Scroll half a page down / up.
+.TP
+.B gg / G
+Jump to the top / bottom of the thread.
+.TP
+.B J / K
+Move the message cursor to the next / previous message.
+.TP
+.B i / a
+Enter insert mode to compose a reply.
+.TP
+.B o
+Open the selected message's first link or attachment with the system
+default handler.
+.TP
+.B p
+Toggle an inline image preview of the selected message (requires
+.BR ueberzug (1)).
+.TP
+.B r
+Open the reaction picker on the selected message.
+.TP
+.B yy
+Yank the selected message's full text to the clipboard.
+.TP
+.B yc
+Yank just the message's one-time passcode (identified among surrounding
+digits by proximity to a keyword such as "code" or "OTP" when the message
+contains more than one number).
+.TP
+.B yl
+Yank the message's first link.
+.TP
+.B q / esc
+Back to the conversation list.
+.PP
+Yanking prefers a native clipboard utility
+.RB ( xclip / xsel / wl\-copy / pbcopy ),
+whichever is found first. Without one \(em for example, when connected
+over SSH to a machine with no display \(em it falls back to an OSC52
+escape sequence, which still reaches a local clipboard over SSH or inside
+tmux/screen with passthrough enabled.
+.SS Thread \(em insert mode
+.TP
+.B enter
+Send the composed message (and any pending attachments).
+.TP
+.B ctrl-t
+Attach a file: prompts for a path, with tab-completion.
+.TP
+.B esc
+Back to normal mode.
+.SS Reaction picker
+.TP
+.B h / l / left / right
+Move the selection among the eight reaction emoji.
+.TP
+.B 1\-8
+Jump directly to a reaction by position.
+.TP
+.B enter
+Send the selected reaction.
+.TP
+.B esc
+Cancel.
+.SS Command mode
+Press
+.B :
+from normal mode to open a command line, with tab-completion over
+command names. Equivalent to the key bindings above:
+.PP
+.RS 4
+:q · :back · :open · :react · :preview · :attach · :new · :search · :send · :help
+.RE
+.SH ENVIRONMENT
+.TP
+.B XDG_DATA_HOME
+Overrides the base directory gmesg stores session, cache and socket data
+under. Defaults to
+.IR ~/.local/share .
+.SH FILES
+Paths below are relative to
+.IR $XDG_DATA_HOME/gmesg ,
+or
+.I ~/.local/share/gmesg
+when
+.B XDG_DATA_HOME
+is unset; a non-default
+.B \-\-profile
+namespaces everything under
+.IR profiles/ name / .
+.TP
+.I session.json
+The paired identity: auth tokens, device identity, and the keys
+negotiated during pairing. Treat it as a credential.
+.TP
+.I gmesg.sock
+Unix domain socket the daemon listens on and the TUI (and one-shot
+sends) connect through.
+.TP
+.I cache/
+Downloaded attachments, cached so external viewers such as xdg-open have
+a real file path to open.
+.SH EXAMPLES
+Pair once, then start the daemon and the TUI:
+.PP
+.RS 4
+gmesg pair
+.br
+gmesg daemon &
+.br
+gmesg
+.RE
+.PP
+Send a one-shot message from a script:
+.PP
+.RS 4
+gmesg \-p 5551234567 \-m "Deployment complete."
+.RE
+.PP
+Send a photograph with a caption to a group:
+.PP
+.RS 4
+gmesg \-p 5551234567,5557654321 \-m "Status report attached." \-f ~/Pictures/status.jpg
+.RE
+.PP
+Run a second, independent pairing (e.g. a work number) alongside the
+default one:
+.PP
+.RS 4
+gmesg \-\-profile work pair
+.br
+gmesg \-\-profile work daemon &
+.br
+gmesg \-\-profile work
+.RE
+.SH SEE ALSO
+.BR notify\-send (1),
+.BR ueberzug (1)

@@ -9,9 +9,11 @@
 package ueberzug
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 )
 
@@ -26,14 +28,40 @@ type Client struct {
 
 // Start launches ueberzug if the binary is on PATH. A nil Client and nil
 // error together mean image preview simply isn't available in this
-// environment (ueberzug not installed) -- that's a feature-detection
-// result, not a failure worth surfacing to the user.
+// environment (ueberzug not installed, or no display server detected) --
+// that's a feature-detection result, not a failure worth surfacing to the
+// user.
 func Start() (*Client, error) {
 	path, err := exec.LookPath("ueberzug")
 	if err != nil {
 		return nil, nil
 	}
-	cmd := exec.Command(path, "layer", "--parser", "json", "--silent")
+
+	args := []string{"layer", "--silent"}
+	if isUeberzugpp(path) {
+		// ueberzugpp supports several image output backends and picks one
+		// itself when --output is omitted, but its auto-detection prefers
+		// X11 whenever $DISPLAY is set -- which is also true under XWayland.
+		// Its X11 backend overlays an override-redirect window on top of
+		// the terminal, which doesn't composite reliably through wlroots
+		// compositors (Hyprland, Sway, ...). Wayland sessions get the
+		// native wlr-layer-shell backend instead, which those compositors
+		// handle correctly; only genuine X11 sessions get --output x11.
+		backend := outputBackend()
+		if backend == "" {
+			return nil, nil
+		}
+		args = append(args, "--output", backend)
+	} else {
+		// The legacy (unmaintained) python ueberzug: X11-only, has no
+		// --output flag, and errors out on unrecognized arguments.
+		if os.Getenv("DISPLAY") == "" {
+			return nil, nil
+		}
+		args = append(args, "--parser", "json")
+	}
+
+	cmd := exec.Command(path, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("open ueberzug stdin: %w", err)
@@ -42,6 +70,31 @@ func Start() (*Client, error) {
 		return nil, fmt.Errorf("start ueberzug: %w", err)
 	}
 	return &Client{cmd: cmd, stdin: stdin}, nil
+}
+
+// isUeberzugpp reports whether path is ueberzugpp's `ueberzug` compat
+// binary (which understands --output) rather than the original python
+// ueberzug (which doesn't). Feature-detected off `layer --help` rather than
+// version strings, since ueberzugpp ships both an `ueberzugpp` binary and a
+// same-CLI `ueberzug` compat shim depending on distro packaging.
+func isUeberzugpp(path string) bool {
+	out, err := exec.Command(path, "layer", "--help").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(out, []byte("--output"))
+}
+
+// outputBackend picks the ueberzugpp image output method for the current
+// display server. Empty means no supported display server was detected.
+func outputBackend() string {
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		return "wayland"
+	}
+	if os.Getenv("DISPLAY") != "" {
+		return "x11"
+	}
+	return ""
 }
 
 // Add displays an image at the given cell position and size, scaled down

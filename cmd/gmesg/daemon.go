@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -25,6 +27,13 @@ import (
 const connectTimeout = 15 * time.Second
 
 func runDaemon() error {
+	// The daemon spends nearly all of its life idle, waiting on the long-poll
+	// connection, so a soft cap keeps its resident set proportional to actual
+	// idle usage instead of the working-set peak from the last attachment
+	// transfer. The limit is soft: the garbage collector works harder to stay
+	// under it but will exceed it rather than fail an allocation.
+	debug.SetMemoryLimit(64 << 20)
+
 	has, err := gmclient.HasSession(profile)
 	if err != nil {
 		return fmt.Errorf("check session: %w", err)
@@ -116,16 +125,26 @@ type notifier struct {
 }
 
 func (n *notifier) seedConversations() error {
+	_, err := n.fetchConversations()
+	return err
+}
+
+// fetchConversations issues a live LIST_CONVERSATIONS call, which under the
+// RCS transport is relayed through the paired phone and answered only once
+// the phone responds -- a round trip that can take several seconds if the
+// phone was asleep. It refreshes the cache as a side effect.
+func (n *notifier) fetchConversations() ([]*gmproto.Conversation, error) {
 	resp, err := n.client.ListConversations(25, gmproto.ListConversationsRequest_INBOX)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	convs := resp.GetConversations()
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	for _, conv := range resp.GetConversations() {
+	for _, conv := range convs {
 		n.conversations[conv.GetConversationID()] = conv
 	}
-	return nil
+	n.mu.Unlock()
+	return convs, nil
 }
 
 func (n *notifier) getConversation(convID string) *gmproto.Conversation {
@@ -196,12 +215,39 @@ func (n *notifier) Handle(method string, params json.RawMessage) (json.RawMessag
 	}
 }
 
+// handleListConversations answers from the conversation cache -- populated
+// at startup by seedConversations and kept current by the conversation-event
+// case in the client's event handler -- rather than issuing a fresh
+// LIST_CONVERSATIONS round trip through the phone on every call. It falls
+// back to a live fetch only when the cache hasn't been populated yet.
 func (n *notifier) handleListConversations() (json.RawMessage, error) {
-	resp, err := n.client.ListConversations(25, gmproto.ListConversationsRequest_INBOX)
-	if err != nil {
-		return nil, err
+	n.mu.Lock()
+	convs := make([]*gmproto.Conversation, 0, len(n.conversations))
+	for _, conv := range n.conversations {
+		if conv.GetStatus() == gmproto.ConversationStatus_ACTIVE {
+			convs = append(convs, conv)
+		}
 	}
-	convs := resp.GetConversations()
+	n.mu.Unlock()
+
+	if len(convs) == 0 {
+		fetched, err := n.fetchConversations()
+		if err != nil {
+			return nil, err
+		}
+		convs = fetched
+	}
+
+	sort.Slice(convs, func(i, j int) bool {
+		if convs[i].GetPinned() != convs[j].GetPinned() {
+			return convs[i].GetPinned()
+		}
+		return convs[i].GetLastMessageTimestamp() > convs[j].GetLastMessageTimestamp()
+	})
+	if len(convs) > 25 {
+		convs = convs[:25]
+	}
+
 	raw := make([]json.RawMessage, len(convs))
 	for i, c := range convs {
 		b, err := protojson.Marshal(c)

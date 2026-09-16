@@ -273,11 +273,17 @@ func (m Model) handleThreadNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G":
 		m.thread.GotoBottom()
 	case "J":
+		wasPreviewShowing := m.previewShowing
 		m.moveMsgCursor(1)
-		return m, tea.ClearScreen
+		if wasPreviewShowing {
+			return m, tea.ClearScreen
+		}
 	case "K":
+		wasPreviewShowing := m.previewShowing
 		m.moveMsgCursor(-1)
-		return m, tea.ClearScreen
+		if wasPreviewShowing {
+			return m, tea.ClearScreen
+		}
 	case "r":
 		msgs := m.messages[m.activeConvID]
 		cur := m.msgCursor[m.activeConvID]

@@ -15,7 +15,15 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"syscall"
+	"time"
 )
+
+// terminationGracePeriod is how long Close waits for the ueberzug process to
+// exit after SIGTERM before escalating to SIGKILL. The legacy python build
+// does not exit on stdin EOF, so a signal is required either way; this bound
+// only covers processes that are slow to act on the signal.
+const terminationGracePeriod = 500 * time.Millisecond
 
 // Client drives a running `ueberzug layer` process over its JSON-parser
 // stdin protocol. The zero value is not usable; construct with Start. A
@@ -138,12 +146,27 @@ func (c *Client) send(cmd map[string]any) error {
 	return err
 }
 
-// Close hides any showing images and stops the ueberzug process. Safe to
-// call on a nil Client.
+// Close stops the ueberzug process. Safe to call on a nil Client.
+//
+// The legacy python ueberzug build does not exit on stdin EOF -- it keeps
+// running until signaled -- so Close sends SIGTERM and escalates to SIGKILL
+// if the process hasn't exited within terminationGracePeriod.
 func (c *Client) Close() error {
 	if c == nil {
 		return nil
 	}
 	c.stdin.Close()
-	return c.cmd.Wait()
+
+	c.cmd.Process.Signal(syscall.SIGTERM)
+
+	done := make(chan error, 1)
+	go func() { done <- c.cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(terminationGracePeriod):
+		c.cmd.Process.Kill()
+		return <-done
+	}
 }

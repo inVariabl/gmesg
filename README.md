@@ -9,8 +9,9 @@ Google's actual RCS/pairing protocol. No browser automation involved.
 
 Early development. Working so far:
 
-- `gmesg pair` — pair with your phone via a QR code rendered in the terminal
-  (Google Messages > Settings > Device pairing > Pair a device)
+- `gmesg pair` — pair with your phone through your Google Account, using
+  cookies copied from a browser session and confirmed by selecting an emoji
+  on the phone (see "Pairing" below)
 - `gmesg -p <number> -m <text>` — one-shot send from a script
 - `gmesg` — interactive TUI with vim-style modal navigation (list: `j`/`k`/`gg`/`G`;
   thread: normal mode to scroll, `i`/`a` to compose, `Esc` to go back a level,
@@ -27,12 +28,36 @@ multi-SIM selection. See `.claude/plans/` for the build plan.
 
 ```sh
 go build -o gmesg ./cmd/gmesg
-./gmesg pair
+wl-paste | ./gmesg pair
 ```
 
 `./build.sh` builds and installs both the binary (`~/.local/bin/gmesg`) and
 its man page (`~/.local/share/man/man1/gmesg.1`) -- `man gmesg` covers every
 flag, TUI key binding, and file location in one place.
+
+### Pairing
+
+Google Messages no longer offers QR code pairing; a new device is
+authorized through the Google Account the phone's Messages app is signed
+in to (Google Messages > Settings > Account). `gmesg pair` takes that
+account's browser cookies:
+
+1. In a private browser window, open
+   <https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config>
+   and sign in.
+2. Open the developer tools, select the Network panel, and reload.
+3. Right-click the `config` request and select Copy > Copy as cURL.
+4. With the window still open, run `wl-paste | gmesg pair` (or `xclip -o
+   -selection clipboard | gmesg pair`, or save the command and run `gmesg
+   pair --cookie-file FILE`), then select the emoji gmesg displays in the
+   prompt on the phone.
+5. Close the private window without signing out (signing out invalidates
+   the cookies). Without a clipboard manager, closing the browser before
+   step 4 discards the copied command.
+
+A JSON object of cookie names and values, or a bare `Cookie:` header value,
+is also accepted. Only the `SID`, `HSID`, `SSID`, `APISID`, `SAPISID`,
+`OSID`, and `__Secure-1PSIDTS` cookies are retained, in the session file.
 
 ### Running more than one gmesg at once
 

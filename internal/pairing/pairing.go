@@ -1,83 +1,70 @@
-// Package pairing drives libgm's QR-code device pairing flow: register a
-// new browser session, hand the resulting pairing URL to the caller to
-// render as a QR code, and wait for the phone to scan it. This mirrors the
-// QRLoginProcess in mautrix-gmessages' own bridge login flow, since that's
-// the reference implementation for the exact timing/retry behavior Google's
-// servers expect.
+// Package pairing drives libgm's Google account pairing flow: authenticate
+// to Google with the user's browser cookies, locate the phone registered
+// to that account, and wait for the user to confirm the pairing by
+// selecting the matching emoji on the phone. This mirrors the
+// GoogleLoginProcess in mautrix-gmessages' own bridge login flow, which is
+// the reference implementation for the sequence Google's servers expect.
 package pairing
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 )
 
-// QRExpiry matches the interval Google's own web client re-issues a QR
-// code at; libgm's RefreshPhoneRelay must be called before it lapses.
-const QRExpiry = 30 * time.Second
-
-// MaxAttempts bounds how many QR refreshes we'll do before giving up.
-const MaxAttempts = 6
-
-// ErrTimeout is returned when the phone never scans the QR code within
-// MaxAttempts refresh cycles.
-var ErrTimeout = errors.New("pairing timed out waiting for phone to scan QR code")
-
-// Pair runs the full QR pairing flow. onQR is invoked once with the initial
-// pairing URL and again each time the QR code is refreshed (roughly every
-// 30s) while waiting for the phone to scan it. On success it returns a
-// libgm.Client with AuthData populated and already disconnected; the caller
-// is responsible for persisting the session and reconnecting.
-func Pair(ctx context.Context, logger zerolog.Logger, onQR func(url string)) (*libgm.Client, error) {
-	client := libgm.NewClient(libgm.NewAuthData(), nil, logger)
+// Pair runs the full Google account pairing flow with the given cookies.
+// onEmoji is invoked once with the emoji the user must select on the phone
+// to confirm the pairing. On success it returns a libgm.Client with
+// AuthData populated and already disconnected; the caller is responsible
+// for persisting the session and reconnecting.
+func Pair(ctx context.Context, logger zerolog.Logger, cookies map[string]string, onEmoji func(emoji string)) (*libgm.Client, error) {
+	auth := libgm.NewAuthData()
+	auth.SetCookies(cookies)
+	client := libgm.NewClient(auth, nil, logger)
 	client.SetEventHandler(func(evt any) {
 		logger.Debug().Type("event_type", evt).Msg("Pre-pairing event")
 	})
-
-	pairSuccess := make(chan *gmproto.PairedData, 1)
-	callback := func(data *gmproto.PairedData) { pairSuccess <- data }
-	client.PairCallback.Store(&callback)
+	ctx = logger.WithContext(ctx)
 
 	if err := client.FetchConfig(ctx); err != nil {
-		return nil, fmt.Errorf("fetch config: %w", err)
+		return nil, fmt.Errorf("fetch config (the cookies may be expired or signed out): %w", err)
 	}
-	qr, err := client.StartLogin()
+	emoji, session, err := client.StartGaiaPairing(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("start login: %w", err)
+		client.Disconnect()
+		return nil, describeError(err)
 	}
-	onQR(qr)
+	onEmoji(emoji)
 
-	start := time.Now()
-	attemptsLeft := MaxAttempts
-	for {
-		timer := time.NewTimer(time.Until(start.Add(QRExpiry)))
-		select {
-		case <-pairSuccess:
-			timer.Stop()
-			client.Disconnect()
-			return client, nil
-		case <-timer.C:
-			attemptsLeft--
-			if attemptsLeft <= 0 {
-				client.Disconnect()
-				return nil, ErrTimeout
-			}
-			newQR, err := client.RefreshPhoneRelay()
-			if err != nil {
-				client.Disconnect()
-				return nil, fmt.Errorf("refresh QR code: %w", err)
-			}
-			start = time.Now()
-			onQR(newQR)
-		case <-ctx.Done():
-			timer.Stop()
-			client.Disconnect()
-			return nil, ctx.Err()
-		}
+	if _, err := client.FinishGaiaPairing(ctx, session); err != nil {
+		client.Disconnect()
+		return nil, describeError(err)
+	}
+	client.Disconnect()
+	return client, nil
+}
+
+// describeError adds operator guidance to the pairing errors libgm reports.
+func describeError(err error) error {
+	switch {
+	case errors.Is(err, libgm.ErrNoDevicesFound):
+		return fmt.Errorf("no phone running Google Messages is registered to this Google account; "+
+			"sign in to the account in Google Messages > Settings > Account on the phone: %w", err)
+	case errors.Is(err, libgm.ErrPairingInitTimeout):
+		return fmt.Errorf("the phone did not respond; confirm it is online and Google Messages is installed: %w", err)
+	case errors.Is(err, events.ErrCallerNoPermission):
+		return fmt.Errorf("Google refused the request for this account: %w", err)
+	case errors.Is(err, libgm.ErrIncorrectEmoji):
+		return fmt.Errorf("an incorrect emoji was selected on the phone: %w", err)
+	case errors.Is(err, libgm.ErrPairingCancelled):
+		return fmt.Errorf("pairing was declined on the phone: %w", err)
+	case errors.Is(err, libgm.ErrPairingTimeout):
+		return fmt.Errorf("no emoji was selected on the phone in time: %w", err)
+	default:
+		return err
 	}
 }

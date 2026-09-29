@@ -14,6 +14,8 @@ gmesg \- a terminal client for Google Messages
 .br
 .B gmesg pair
 .RB [ \-v ]
+.RB [ \-c
+.IR file ]
 .br
 .B gmesg daemon
 .SH DESCRIPTION
@@ -27,7 +29,7 @@ without browser automation.
 There are three ways to run it:
 .IP \(bu 2
 .B gmesg pair
-links your phone once, via a QR code rendered in the terminal.
+links your phone once, through the Google Account it is signed in to.
 .IP \(bu 2
 .B gmesg daemon
 runs in the background, holding the connection to Google's servers open
@@ -53,11 +55,33 @@ gmesg
 .SH COMMANDS
 .TP
 .B pair
-Display a QR code in the terminal. Scan it from the phone being paired,
-via Google Messages > Settings > Device pairing > Pair a device. The code
-refreshes automatically every 30 seconds until scanned. If a session
-already exists for the selected profile, pairing again replaces it.
+Sign in to Google with cookies copied from a browser session, then
+request that Google Messages on the phone approve the new device. The
+phone must be signed in to the same Google Account (Google Messages >
+Settings > Account). gmesg displays an emoji; select the same emoji in
+the prompt on the phone to complete the pairing. If a session already
+exists for the selected profile, pairing again replaces it.
+.IP
+To obtain the cookies, open
+.I https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config
+in a private browser window and sign in. In the developer tools Network
+panel, reload, then copy the
+.B config
+request with Copy > Copy as cURL. Supply the copied command on standard
+input or with
+.BR \-c
+while the window is still open, since without a clipboard manager the
+copied text is discarded when the browser exits. After pairing, close
+the window without signing out, since signing out invalidates the
+cookies.
+A JSON object of cookie names and values, or a bare Cookie header value,
+is also accepted.
 .RS
+.TP
+.BR \-c ", " \-\-cookie\-file " " \fIfile\fR
+Read the cookies from
+.I file
+instead of standard input.
 .TP
 .BR \-v ", " \-\-verbose
 Show debug-level protocol logs while pairing.
@@ -232,10 +256,11 @@ sends) connect through.
 Downloaded attachments, cached so external viewers such as xdg-open have
 a real file path to open.
 .SH EXAMPLES
-Pair once, then start the daemon and the TUI:
+Pair once, with a copied cURL command on the clipboard, then start the
+daemon and the TUI:
 .PP
 .RS 4
-gmesg pair
+wl\-paste | gmesg pair
 .br
 gmesg daemon &
 .br
@@ -258,7 +283,7 @@ Run a second, independent pairing (e.g. a work number) alongside the
 default one:
 .PP
 .RS 4
-gmesg \-\-profile work pair
+gmesg \-\-profile work pair \-c work\-request.txt
 .br
 gmesg \-\-profile work daemon &
 .br

@@ -37,7 +37,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		Long: `gmesg is a terminal client for Google Messages (RCS/SMS).
 
-Run "gmesg pair" once to link your phone via a terminal QR code. Then
+Run "gmesg pair" once to link your phone through your Google Account. Then
 start "gmesg daemon &" for background notifications, and use "gmesg" for
 the interactive TUI (or "gmesg -p <number> -m <text>" to send from a
 script). The TUI connects to the daemon over a Unix socket, so both share

@@ -8,7 +8,6 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
 	go.mau.fi/mautrix-gmessages v0.2605.0
@@ -43,7 +42,5 @@ require (
 	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
-	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	rsc.io/qr v0.2.0 // indirect
 )

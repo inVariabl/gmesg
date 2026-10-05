@@ -30,7 +30,7 @@ func (m Model) View() string {
 		conv := m.conversations[m.activeConvID]
 		title := "Conversation"
 		if conv != nil {
-			title = conv.GetName()
+			title = normalizeColumnWidth(conv.GetName())
 		}
 		body = headerStyle.Render(title) + "\n" +
 			m.thread.View() + "\n" +

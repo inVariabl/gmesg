@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -68,7 +69,16 @@ func runDaemon() error {
 		settings:      settings,
 		conversations: map[string]*gmproto.Conversation{},
 	}
-	if err := n.seedConversations(); err != nil {
+	if err := n.seedConversations(); errors.Is(err, events.ErrCallerNoPermission) {
+		// Google refreshes the token of a session it no longer serves, then
+		// refuses every request made with it, so the daemon would otherwise
+		// report that it is listening while receiving nothing.
+		client.Disconnect()
+		if !client.AuthData.IsGoogleAccount() {
+			return fmt.Errorf("Google refused this session, which was paired by QR code and is no longer served -- run \"gmesg pair\" to pair through the Google Account: %w", err)
+		}
+		return fmt.Errorf("Google refused this session -- run \"gmesg pair\" again: %w", err)
+	} else if err != nil {
 		logger.Warn().Err(err).Msg("Failed to seed conversation cache, sender names may be missing at first")
 	}
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/util"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -78,8 +79,39 @@ func runDaemon() error {
 	defer ipcServer.Close()
 	logger.Info().Str("socket", socketPath).Msg("IPC server listening")
 
+	sup := newSupervisor(client, logger)
+	fatalCh := make(chan error, 1)
+	reportFatal := func(err error) {
+		select {
+		case fatalCh <- err:
+		default:
+		}
+	}
+
 	client.SetEventHandler(func(evt any) {
 		switch v := evt.(type) {
+		case *events.AuthTokenRefreshed:
+			// The refreshed token must reach the disk now: if the daemon is
+			// terminated without the shutdown path running, the next start
+			// would otherwise present the superseded token.
+			go func() {
+				if err := gmclient.Save(profile, client); err != nil {
+					logger.Warn().Err(err).Msg("Failed to save refreshed session")
+				}
+			}()
+		case *events.PhoneNotResponding:
+			sup.setResponsive(false)
+		case *events.PhoneRespondingAgain:
+			sup.setResponsive(true)
+		case *events.PingFailed:
+			logger.Warn().Err(v.Error).Msg("Ping failed, requesting reconnection")
+			sup.requestReconnect()
+		case *events.ListenFatalError:
+			reportFatal(fmt.Errorf("connection terminated by the server: %w", v.Error))
+		case *events.GaiaLoggedOut:
+			reportFatal(fmt.Errorf("the Google account session was signed out -- run \"gmesg pair\" again"))
+		case *gmproto.RevokePairData:
+			reportFatal(fmt.Errorf("the phone revoked this pairing -- run \"gmesg pair\" again"))
 		case *gmproto.Conversation:
 			n.mu.Lock()
 			n.conversations[v.GetConversationID()] = v
@@ -104,15 +136,128 @@ func runDaemon() error {
 	})
 
 	logger.Info().Msg("Listening for messages, Ctrl+C to stop")
+	stopSupervisor := make(chan struct{})
+	go sup.run(stopSupervisor)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	<-sigCh
+	var fatalErr error
+	select {
+	case <-sigCh:
+	case fatalErr = <-fatalCh:
+	}
+	close(stopSupervisor)
 
 	client.Disconnect()
 	if err := gmclient.Save(profile, client); err != nil {
 		return fmt.Errorf("save session: %w", err)
 	}
-	return nil
+	return fatalErr
+}
+
+const (
+	// superviseInterval is how often the supervisor inspects the connection.
+	superviseInterval = time.Minute
+	// unresponsiveLimit is how long the phone may fail to answer pings
+	// before the long-poll stream is presumed dead and replaced.
+	unresponsiveLimit = 5 * time.Minute
+	// reconnectInterval is the minimum time between two reconnections, so
+	// that a phone which is genuinely offline does not cause a reconnection
+	// on every inspection.
+	reconnectInterval = 10 * time.Minute
+	// suspendThreshold is the wall-clock gap between two inspections beyond
+	// which the host is presumed to have been suspended.
+	suspendThreshold = 3 * superviseInterval
+)
+
+// supervisor keeps the long-poll connection alive across conditions libgm
+// does not recover from by itself. libgm refreshes the tachyon auth token
+// only when it opens a new long-poll request, so a stream that stalls
+// without closing -- as one does after a host suspend or a network change --
+// is never replaced, the token expires roughly a day later, and every
+// subsequent request fails with HTTP 401. The supervisor replaces the
+// stream when the token approaches expiry, when the phone has stopped
+// answering pings, when a ping fails, and when the host resumes from
+// suspend. Client.Reconnect refreshes the token before reopening the
+// stream.
+type supervisor struct {
+	client *libgm.Client
+	logger zerolog.Logger
+
+	reconnectCh chan struct{}
+
+	mu                sync.Mutex
+	unresponsiveSince time.Time
+}
+
+func newSupervisor(client *libgm.Client, logger zerolog.Logger) *supervisor {
+	return &supervisor{client: client, logger: logger, reconnectCh: make(chan struct{}, 1)}
+}
+
+func (s *supervisor) setResponsive(responsive bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if responsive {
+		s.unresponsiveSince = time.Time{}
+	} else if s.unresponsiveSince.IsZero() {
+		s.unresponsiveSince = time.Now()
+	}
+}
+
+func (s *supervisor) requestReconnect() {
+	select {
+	case s.reconnectCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *supervisor) run(stop <-chan struct{}) {
+	ticker := time.NewTicker(superviseInterval)
+	defer ticker.Stop()
+	// Round(0) discards the monotonic reading, so that the comparison uses
+	// the wall clock, which advances during suspend while the monotonic
+	// clock does not.
+	lastInspection := time.Now().Round(0)
+	var lastReconnect time.Time
+	for {
+		var reason string
+		select {
+		case <-stop:
+			return
+		case <-s.reconnectCh:
+			reason = "ping failure"
+		case now := <-ticker.C:
+			wallNow := now.Round(0)
+			gap := wallNow.Sub(lastInspection)
+			lastInspection = wallNow
+			s.mu.Lock()
+			unresponsiveSince := s.unresponsiveSince
+			s.mu.Unlock()
+			switch {
+			case gap > suspendThreshold:
+				reason = "resume from suspend"
+				// A resume justifies an immediate reconnection regardless
+				// of when the previous one took place.
+				lastReconnect = time.Time{}
+			case time.Until(s.client.AuthData.TachyonExpiry) < libgm.RefreshTachyonBuffer:
+				reason = "auth token expiry"
+				lastReconnect = time.Time{}
+			case !unresponsiveSince.IsZero() && time.Since(unresponsiveSince) > unresponsiveLimit:
+				reason = "phone unresponsive"
+			default:
+				continue
+			}
+		}
+		if !lastReconnect.IsZero() && time.Since(lastReconnect) < reconnectInterval {
+			continue
+		}
+		lastReconnect = time.Now()
+		s.logger.Info().Str("reason", reason).Msg("Reconnecting")
+		if err := s.client.Reconnect(); err != nil {
+			s.logger.Err(err).Msg("Reconnection failed, retrying later")
+			continue
+		}
+		s.setResponsive(true)
+	}
 }
 
 type notifier struct {

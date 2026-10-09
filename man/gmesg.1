@@ -18,6 +18,8 @@ gmesg \- a terminal client for Google Messages
 .IR file ]
 .br
 .B gmesg daemon
+.br
+.B gmesg mcp
 .SH DESCRIPTION
 .B gmesg
 is a terminal client for Google Messages (RCS/SMS), built on
@@ -97,6 +99,19 @@ login/autostart script, in the same manner as
 .BR dunst (1).
 Terminates on SIGINT or SIGTERM (e.g. Ctrl-C), saving the session before
 exit.
+.TP
+.B mcp
+Serve the Model Context Protocol on standard input and output, so that an
+AI client such as Claude Code can list conversations, read messages,
+search contacts, send messages, and add reactions. Each request is
+forwarded to the daemon over its Unix socket, so the daemon must be
+running under the same profile. The tools provided are
+.BR list_conversations ,
+.BR read_messages ,
+.BR search_contacts ,
+.BR send_message ,
+and
+.BR react_to_message .
 .SH OPTIONS
 .TP
 .BI \-\-profile " name"
@@ -289,7 +304,9 @@ a real file path to open.
 .I ~/.abook/addressbook
 The
 .BR abook (1)
-address book, read by the daemon for recipient completion. It is read again on each request, so edits take effect without
+address book, read by the daemon for recipient completion and the
+.B search_contacts
+tool. It is read again on each request, so edits take effect without
 restarting the daemon.
 .SH EXAMPLES
 Pair once, with a copied cURL command on the clipboard, then start the
@@ -324,6 +341,11 @@ gmesg \-\-profile work pair \-c work\-request.txt
 gmesg \-\-profile work daemon &
 .br
 gmesg \-\-profile work
+.RE
+Make gmesg available to Claude Code as an MCP server:
+.PP
+.RS 4
+claude mcp add gmesg \-\- gmesg mcp
 .RE
 .SH SEE ALSO
 .BR abook (1),

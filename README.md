@@ -23,6 +23,8 @@ Early development. Working so far:
 - New conversations (`n` in the TUI) complete names from the
   [abook](https://abook.sourceforge.io/) address book (`~/.abook/addressbook`)
   merged with the phone's contact list; add several recipients for a group
+- `gmesg mcp` — a Model Context Protocol server for AI clients (see "AI
+  clients" below)
 
 Not yet implemented: multi-SIM selection. See `.claude/plans/` for the build plan.
 
@@ -94,3 +96,19 @@ is AGPL-3.0 licensed. GPLv3 §13 grants explicit permission to combine
 GPLv3 and AGPLv3 works; the combination is unaffected by this beyond the
 AGPL's network-source-disclosure clause applying to the combined binary
 if run as a network service.
+
+### AI clients
+
+`gmesg mcp` serves the [Model Context Protocol](https://modelcontextprotocol.io)
+on standard input and output, forwarding each request to the running daemon.
+It provides `list_conversations`, `read_messages`, `search_contacts`,
+`send_message`, and `react_to_message`. To register it with Claude Code:
+
+```sh
+gmesg daemon &
+claude mcp add gmesg -- gmesg mcp
+```
+
+Claude Code asks for approval before each tool call unless the tool is
+allowed in its permission settings; leaving `send_message` unapproved
+keeps every outgoing message subject to confirmation.

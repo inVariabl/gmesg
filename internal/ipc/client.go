@@ -3,10 +3,15 @@ package ipc
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
 )
+
+// ErrClosed is returned by Call when the connection to the daemon ends
+// before the response arrives.
+var ErrClosed = errors.New("connection to the daemon closed")
 
 type Client struct {
 	conn      net.Conn
@@ -102,7 +107,18 @@ func (c *Client) Call(method string, params, result any) error {
 		c.enc.Encode(req)
 	}()
 
-	resp := <-ch
+	var resp Response
+	select {
+	case resp = <-ch:
+	case <-c.done:
+		// The read loop has ended, so no response can arrive. One that
+		// arrived just before it ended is still honored.
+		select {
+		case resp = <-ch:
+		default:
+			return ErrClosed
+		}
+	}
 	if resp.Error != "" {
 		return fmt.Errorf("%s", resp.Error)
 	}

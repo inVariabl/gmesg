@@ -65,6 +65,7 @@ optional if at least one -f is given.`,
 
 	root.AddCommand(newPairCmd())
 	root.AddCommand(newDaemonCmd())
+	root.AddCommand(newMCPCmd())
 
 	return root
 }

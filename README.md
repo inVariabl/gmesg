@@ -20,9 +20,11 @@ Early development. Working so far:
   `xclip`/`xsel`/`wl-copy` if one is installed, otherwise falls back to an
   OSC52 escape sequence)
 - `gmesg daemon` — background listener that fires `notify-send` on incoming messages
+- New conversations (`n` in the TUI) complete names from the
+  [abook](https://abook.sourceforge.io/) address book (`~/.abook/addressbook`)
+  merged with the phone's contact list; add several recipients for a group
 
-Not yet implemented: attachments, group creation from inside the TUI,
-multi-SIM selection. See `.claude/plans/` for the build plan.
+Not yet implemented: multi-SIM selection. See `.claude/plans/` for the build plan.
 
 ## Usage
 

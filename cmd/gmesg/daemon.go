@@ -22,6 +22,7 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/util"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/inVariabl/gmesg/internal/contacts"
 	"github.com/inVariabl/gmesg/internal/gmclient"
 	"github.com/inVariabl/gmesg/internal/ipc"
 )
@@ -277,6 +278,12 @@ type notifier struct {
 
 	mu            sync.Mutex
 	conversations map[string]*gmproto.Conversation
+
+	// phoneContacts caches the paired phone's contact list after the first
+	// successful LIST_CONTACTS call, since that request is relayed through
+	// the phone and the list changes rarely.
+	contactsMu    sync.Mutex
+	phoneContacts []contacts.Contact
 }
 
 func (n *notifier) seedConversations() error {
@@ -365,6 +372,8 @@ func (n *notifier) Handle(method string, params json.RawMessage) (json.RawMessag
 		return n.handleRequestFullMedia(params)
 	case "download_attachment":
 		return n.handleDownloadAttachment(params)
+	case "list_contacts":
+		return n.handleListContacts()
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
@@ -598,4 +607,49 @@ func (n *notifier) handleDownloadAttachment(params json.RawMessage) (json.RawMes
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"path": path})
+}
+
+// handleListContacts returns the abook address book merged with the paired
+// phone's contact list. The address book is read on every call so that an
+// edit made in abook takes effect without restarting the daemon. If the
+// phone's list cannot be obtained, the address book alone is returned.
+func (n *notifier) handleListContacts() (json.RawMessage, error) {
+	path, err := contacts.DefaultAbookPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve address book path: %w", err)
+	}
+	abook, err := contacts.LoadAbook(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	phone, err := n.loadPhoneContacts()
+	if err != nil {
+		n.logger.Warn().Err(err).Msg("Failed to list phone contacts, using the address book alone")
+	}
+	return json.Marshal(map[string]any{"contacts": contacts.Merge(abook, phone)})
+}
+
+func (n *notifier) loadPhoneContacts() ([]contacts.Contact, error) {
+	n.contactsMu.Lock()
+	defer n.contactsMu.Unlock()
+	if n.phoneContacts != nil {
+		return n.phoneContacts, nil
+	}
+	resp, err := n.client.ListContacts()
+	if err != nil {
+		return nil, err
+	}
+	list := []contacts.Contact{}
+	for _, c := range resp.GetContacts() {
+		number := c.GetNumber().GetNumber()
+		if c.GetName() == "" || contacts.NormalizeNumber(number) == "" {
+			continue
+		}
+		list = append(list, contacts.Contact{
+			Name:    c.GetName(),
+			Numbers: []contacts.Number{{Value: number, Label: "phone"}},
+		})
+	}
+	n.phoneContacts = list
+	return list, nil
 }

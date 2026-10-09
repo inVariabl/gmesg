@@ -142,10 +142,40 @@ Filter the list (built-in fuzzy filter).
 Open the selected conversation.
 .TP
 .B n
-Start a new conversation (prompts for a recipient).
+Start a new conversation. The prompt accepts names and telephone
+numbers; see
+.B New conversation prompt
+below.
 .TP
 .B q
 Quit gmesg.
+.SS New conversation prompt
+Typing part of a name lists matching contacts from the
+.BR abook (1)
+address book and the phone's contact list, one row per telephone number.
+Names match loosely: a prefix of any word, a substring, or the letters
+in order (\(lqjsmi\(rq matches \(lqJohn Smith\(rq). Where both sources
+list the same number, the address book name is shown. Adding two or more
+recipients starts a group conversation.
+.TP
+.BR tab ", " enter
+Add the highlighted contact as a recipient. A typed telephone number is
+added as written.
+.TP
+.BR ctrl\-n ", " ctrl\-p ", " down ", " up
+Move the highlight to the next or previous contact.
+.TP
+.B ,
+Add the typed telephone number (or the highlighted contact).
+.TP
+.B backspace
+On an empty prompt, remove the last recipient.
+.TP
+.B enter
+On an empty prompt, start the conversation with the recipients added.
+.TP
+.B esc
+Cancel.
 .SS Thread \(em normal mode
 .TP
 .B j / k / down / up
@@ -255,6 +285,12 @@ sends) connect through.
 .I cache/
 Downloaded attachments, cached so external viewers such as xdg-open have
 a real file path to open.
+.TP
+.I ~/.abook/addressbook
+The
+.BR abook (1)
+address book, read by the daemon for recipient completion. It is read again on each request, so edits take effect without
+restarting the daemon.
 .SH EXAMPLES
 Pair once, with a copied cURL command on the clipboard, then start the
 daemon and the TUI:
@@ -290,5 +326,6 @@ gmesg \-\-profile work daemon &
 gmesg \-\-profile work
 .RE
 .SH SEE ALSO
+.BR abook (1),
 .BR notify\-send (1),
 .BR ueberzug (1)

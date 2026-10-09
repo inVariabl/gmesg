@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 
+	"github.com/inVariabl/gmesg/internal/contacts"
 	"github.com/inVariabl/gmesg/internal/gmclient"
 	"github.com/inVariabl/gmesg/internal/ipc"
 	"github.com/inVariabl/gmesg/internal/ueberzug"
@@ -60,8 +61,12 @@ type Model struct {
 	attachInput        textinput.Model
 	pendingAttachments []string
 
-	startingConv bool
-	newConvInput textinput.Model
+	startingConv      bool
+	newConvInput      textinput.Model
+	recipients        []contacts.Candidate
+	recipientMatches  []contacts.Candidate
+	recipientMatchIdx int
+	contactList       []contacts.Contact
 
 	commanding      bool
 	commandInput    textinput.Model
@@ -115,7 +120,7 @@ func New(ipcClient *ipc.Client, cacheDir string, uz *ueberzug.Client) Model {
 	attachInput.PlaceholderStyle = lipgloss.NewStyle().Faint(true)
 
 	newConvInput := textinput.New()
-	newConvInput.Placeholder = "phone number(s), comma-separated for a group"
+	newConvInput.Placeholder = "name or number; enter on an empty prompt starts the conversation"
 	newConvInput.PlaceholderStyle = lipgloss.NewStyle().Faint(true)
 
 	commandInput := textinput.New()

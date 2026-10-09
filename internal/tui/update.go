@@ -55,6 +55,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = ""
 		m.refreshListItems()
+		return m, loadContacts(m.ipcClient)
+
+	case contactsLoadedMsg:
+		// A failure leaves completion without candidates; a telephone
+		// number can still be typed directly, so it is not reported.
+		if msg.err == nil {
+			m.contactList = msg.contacts
+			if m.startingConv {
+				m.refreshRecipientMatches()
+			}
+		}
 		return m, nil
 
 	case loadingTickMsg:
@@ -199,8 +210,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ipcClient.Close()
 			return m, tea.Quit
 		case "n":
-			m.startingConv = true
-			return m, m.newConvInput.Focus()
+			return m, m.beginNewConversation()
 		case "enter":
 			return m.openSelectedConversation()
 		}
@@ -463,29 +473,6 @@ func completePath(partial string) []string {
 	return matches
 }
 
-func (m Model) handleNewConvKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.startingConv = false
-		m.newConvInput.Reset()
-		m.newConvInput.Blur()
-		return m, nil
-	case "enter":
-		phones := splitPhones(m.newConvInput.Value())
-		m.startingConv = false
-		m.newConvInput.Reset()
-		m.newConvInput.Blur()
-		if len(phones) == 0 {
-			return m, nil
-		}
-		m.status = "Starting conversation..."
-		return m, resolveConversation(m.ipcClient, phones)
-	}
-	var cmd tea.Cmd
-	m.newConvInput, cmd = m.newConvInput.Update(msg)
-	return m, cmd
-}
-
 func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -635,9 +622,7 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m, m.attachInput.Focus()
 
 	case "new", "n":
-		m.startingConv = true
-		m.focus = focusList
-		return m, m.newConvInput.Focus()
+		return m, m.beginNewConversation()
 
 	case "search", "s":
 		if m.focus == focusList {
@@ -663,16 +648,6 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("unknown command: %s (try :help)", cmd)
 		return m, nil
 	}
-}
-
-func splitPhones(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 func expandPath(p string) string {

@@ -22,9 +22,15 @@ func (m Model) View() string {
 	var body string
 	switch m.focus {
 	case focusList:
-		body = m.list.View()
 		if m.startingConv {
-			body += "\nNew conversation: " + m.newConvInput.View()
+			// The list yields rows to the prompt and its candidates so the
+			// whole view still fits the terminal.
+			prompt := m.newConversationView()
+			l := m.list
+			l.SetHeight(max(m.height-1-lipgloss.Height(prompt), 1))
+			body = l.View() + "\n" + prompt
+		} else {
+			body = m.list.View()
 		}
 	case focusThread:
 		conv := m.conversations[m.activeConvID]
@@ -46,7 +52,7 @@ func (m Model) View() string {
 		case m.commanding:
 			status = m.commandInput.View()
 		case m.focus == focusList && m.startingConv:
-			status = "-- NEW CONVERSATION -- enter start · esc cancel"
+			status = "-- NEW CONVERSATION -- tab/enter add · ctrl-n/ctrl-p choose · enter on empty prompt start · esc cancel"
 		case m.focus == focusList:
 			status = "j/k/gg/G navigate · enter open · / search · n new conversation · q quit"
 		case m.reacting:

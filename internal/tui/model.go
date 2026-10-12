@@ -32,7 +32,7 @@ const (
 	modeInsert
 )
 
-var reactionEmojis = []string{"👍", "💀", "😭", "😂", "😐", "😳", "🥀", "🍅"}
+var reactionEmojis = []string{"👍", "💀", "😭", "😂", "😐", "😳", "🥀", "🍅", "💎", "❤️"}
 
 type Model struct {
 	ipcClient *ipc.Client

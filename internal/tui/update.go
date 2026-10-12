@@ -338,8 +338,9 @@ func (m Model) handleReactionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		return m.sendSelectedReaction(reactionEmojis[m.reactionCursor])
-	case "1", "2", "3", "4", "5", "6", "7", "8":
-		idx := int(msg.String()[0] - '1')
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9", "0":
+		// Number keys select by position; 0 selects the tenth entry.
+		idx := (int(msg.String()[0]-'0') + 9) % 10
 		if idx < len(reactionEmojis) {
 			return m.sendSelectedReaction(reactionEmojis[idx])
 		}

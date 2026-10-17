@@ -16,6 +16,15 @@ type Handler interface {
 type clientConn struct {
 	conn net.Conn
 	enc  *json.Encoder
+	// wmu serializes writes, since responses and broadcast events are
+	// written to the connection from several goroutines.
+	wmu sync.Mutex
+}
+
+func (cc *clientConn) encode(v any) {
+	cc.wmu.Lock()
+	defer cc.wmu.Unlock()
+	cc.enc.Encode(v)
 }
 
 type Server struct {
@@ -85,14 +94,19 @@ func (s *Server) handleConn(cc *clientConn) {
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 			continue
 		}
-		result, err := s.handler.Handle(req.Method, req.Params)
-		resp := Response{ID: req.ID}
-		if err != nil {
-			resp.Error = err.Error()
-		} else if result != nil {
-			resp.Result = result
-		}
-		cc.enc.Encode(resp)
+		// Each request is handled in its own goroutine, so that a request
+		// awaiting a slow phone does not delay the requests behind it.
+		// Clients match responses to requests by ID, not by order.
+		go func(req Request) {
+			result, err := s.handler.Handle(req.Method, req.Params)
+			resp := Response{ID: req.ID}
+			if err != nil {
+				resp.Error = err.Error()
+			} else if result != nil {
+				resp.Result = result
+			}
+			cc.encode(resp)
+		}(req)
 	}
 }
 
@@ -111,7 +125,9 @@ func (s *Server) Broadcast(event string, data any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for cc := range s.clients {
+		cc.wmu.Lock()
 		cc.conn.Write(line)
+		cc.wmu.Unlock()
 	}
 }
 

@@ -474,7 +474,7 @@ func (n *notifier) handleResolveConversation(params json.RawMessage) (json.RawMe
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
-	conv, err := gmclient.ResolveConversation(n.client, p.Phones)
+	conv, err := n.resolveConversation(p.Phones)
 	if err != nil {
 		return nil, err
 	}
@@ -483,6 +483,88 @@ func (n *notifier) handleResolveConversation(params json.RawMessage) (json.RawMe
 		return nil, fmt.Errorf("marshal conversation: %w", err)
 	}
 	return json.Marshal(map[string]any{"conversation": json.RawMessage(b)})
+}
+
+// resolveTimeout bounds each attempt to get or create a conversation. libgm
+// waits without limit for the phone's answer, and the phone has been
+// observed to create the conversation yet never answer, which left the
+// caller waiting indefinitely. resolveAttempts is how many requests are
+// made before giving up; repeating one is harmless, since the phone returns
+// the existing conversation.
+const (
+	resolveTimeout  = 15 * time.Second
+	resolveAttempts = 2
+)
+
+// resolveConversation gets or creates the conversation with phones. When an
+// attempt goes unanswered it consults the conversation cache, which the
+// phone's conversation events may have updated meanwhile, before trying
+// again. An unanswered request's goroutine remains blocked in libgm, which
+// offers no means of abandoning a request.
+func (n *notifier) resolveConversation(phones []string) (*gmproto.Conversation, error) {
+	type outcome struct {
+		conv *gmproto.Conversation
+		err  error
+	}
+	for attempt := 1; attempt <= resolveAttempts; attempt++ {
+		done := make(chan outcome, 1)
+		go func() {
+			conv, err := gmclient.ResolveConversation(n.client, phones)
+			done <- outcome{conv, err}
+		}()
+		select {
+		case o := <-done:
+			if o.err != nil {
+				return nil, o.err
+			}
+			n.mu.Lock()
+			n.conversations[o.conv.GetConversationID()] = o.conv
+			n.mu.Unlock()
+			return o.conv, nil
+		case <-time.After(resolveTimeout):
+			n.logger.Warn().Int("attempt", attempt).Msg("Phone did not answer the conversation request")
+		}
+		if conv := n.findConversation(phones); conv != nil {
+			return conv, nil
+		}
+	}
+	return nil, fmt.Errorf("the phone did not answer within %s; try again", resolveTimeout*resolveAttempts)
+}
+
+// findConversation returns the cached conversation whose participants,
+// excluding this account, are exactly phones, or nil if none is cached.
+func (n *notifier) findConversation(phones []string) *gmproto.Conversation {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, conv := range n.conversations {
+		var numbers []string
+		for _, p := range conv.GetParticipants() {
+			if !p.GetIsMe() {
+				numbers = append(numbers, p.GetID().GetNumber())
+			}
+		}
+		if len(numbers) != len(phones) {
+			continue
+		}
+		matched := true
+		for _, phone := range phones {
+			found := false
+			for _, number := range numbers {
+				if contacts.SameNumber(phone, number) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return conv
+		}
+	}
+	return nil
 }
 
 func (n *notifier) handleSendMessage(params json.RawMessage) (json.RawMessage, error) {
@@ -575,8 +657,8 @@ func (n *notifier) handleSendReaction(params json.RawMessage) (json.RawMessage, 
 
 func (n *notifier) handleRequestFullMedia(params json.RawMessage) (json.RawMessage, error) {
 	var p struct {
-		MsgID         string `json:"msg_id"`
-		ActionMsgID   string `json:"action_msg_id"`
+		MsgID       string `json:"msg_id"`
+		ActionMsgID string `json:"action_msg_id"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
@@ -589,10 +671,10 @@ func (n *notifier) handleRequestFullMedia(params json.RawMessage) (json.RawMessa
 
 func (n *notifier) handleDownloadAttachment(params json.RawMessage) (json.RawMessage, error) {
 	var p struct {
-		MediaID        string `json:"media_id"`
-		MediaName      string `json:"media_name"`
-		DecryptionKey  []byte `json:"decryption_key"`
-		CacheDir       string `json:"cache_dir"`
+		MediaID       string `json:"media_id"`
+		MediaName     string `json:"media_name"`
+		DecryptionKey []byte `json:"decryption_key"`
+		CacheDir      string `json:"cache_dir"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)

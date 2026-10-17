@@ -108,3 +108,21 @@ func TestIsNumberLike(t *testing.T) {
 		}
 	}
 }
+
+func TestSameNumber(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"+1 (555) 010-0000", "15550100000", true},
+		{"+15550100000", "(555) 010-0000", true},
+		{"555-010-0000", "555-010-0001", false},
+		{"12345", "212345", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		if got := SameNumber(c.a, c.b); got != c.want {
+			t.Errorf("SameNumber(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

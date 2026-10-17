@@ -319,3 +319,18 @@ func IsNumberLike(s string) bool {
 	s = strings.TrimSpace(s)
 	return s != "" && isNumberLike(s) && len(NormalizeNumber(s)) >= 3
 }
+
+// SameNumber reports whether a and b denote the same telephone number,
+// tolerating a country code present on one and absent on the other, as in
+// "+1 555-010-0000" and "(555) 010-0000". Numbers shorter than seven digits
+// must match exactly.
+func SameNumber(a, b string) bool {
+	a, b = NormalizeNumber(a), NormalizeNumber(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if len(a) < len(b) {
+		a, b = b, a
+	}
+	return a == b || (len(b) >= 7 && strings.HasSuffix(a, b))
+}
